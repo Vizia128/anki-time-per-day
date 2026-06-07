@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+dist/
+build/
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Test cache
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Build artifacts
+*.ankiaddon
+*.zip
+
+# Anki collection files (from headless tests — never commit real data)
+*.anki2
+*.anki21
+*.log
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Claude Code session data (project-local)
+.claude/
+
+# Reference / prototype code — kept locally for reference, not part of the add-on
+ideas/
+anki-addon-limit-new-by-young/

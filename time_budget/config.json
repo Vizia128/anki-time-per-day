@@ -1,0 +1,12 @@
+{
+  "decks": [
+    {
+      "deckNames": ".*",
+      "budgetMinutes": 30,
+      "horizonDays": 365,
+      "dailyNewCap": null,
+      "desiredRetentionOverride": null,
+      "autoApply": false
+    }
+  ]
+}
