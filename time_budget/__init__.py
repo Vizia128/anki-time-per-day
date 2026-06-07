@@ -190,9 +190,33 @@ def init() -> None:
         deck_row.addWidget(qt.QLabel("Deck:"))
         deck_row.addWidget(deck_combo, 1)
 
-        # ── Settings group ────────────────────────────────────────────
-        settings_group = qt.QGroupBox("Settings")
+        # ── Section-card helper (Anki settings style) ────────────────
+        def _make_card(title: str):
+            card = qt.QFrame()
+            card.setStyleSheet(
+                "QFrame { border-radius: 8px; background: palette(base);"
+                " border: 1px solid palette(mid); }"
+            )
+            heading = qt.QLabel(title)
+            heading.setStyleSheet(
+                "font-size: 15px; font-weight: bold; background: transparent;"
+                " border: none;"
+            )
+            form = qt.QFormLayout()
+            form.setContentsMargins(0, 10, 0, 0)
+            form.setSpacing(10)
+            form.setLabelAlignment(qt.Qt.AlignmentFlag.AlignLeft)
+            form.setFieldGrowthPolicy(
+                qt.QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow
+            )
+            outer = qt.QVBoxLayout(card)
+            outer.setContentsMargins(16, 14, 16, 16)
+            outer.setSpacing(0)
+            outer.addWidget(heading)
+            outer.addLayout(form)
+            return card, form, outer
 
+        # ── Settings ──────────────────────────────────────────────────
         budget_spin = qt.QDoubleSpinBox()
         budget_spin.setRange(0.5, 9999.0)
         budget_spin.setDecimals(1)
@@ -209,8 +233,8 @@ def init() -> None:
             "Target days to finish the deck. Edit to compute the required daily budget."
         )
 
-        link_lbl = qt.QLabel("← edit either one; the other updates automatically")
-        link_lbl.setStyleSheet("color: gray; font-size: 10px;")
+        link_lbl = qt.QLabel("↑ edit either one; the other updates automatically")
+        link_lbl.setStyleSheet("color: gray; font-size: 10px; background: transparent;")
 
         today_same_chk = qt.QCheckBox("Same as daily budget")
         today_same_chk.setChecked(True)
@@ -229,6 +253,7 @@ def init() -> None:
         today_row_layout.addWidget(today_same_chk)
         today_row_layout.addWidget(today_spin, 1)
         today_widget = qt.QWidget()
+        today_widget.setStyleSheet("background: transparent;")
         today_widget.setLayout(today_row_layout)
 
         cap_spin = qt.QSpinBox()
@@ -239,19 +264,24 @@ def init() -> None:
             "0 = no ceiling."
         )
 
-        sf = qt.QFormLayout()
+        auto_check = qt.QCheckBox()
+        auto_check.setToolTip(
+            "Write the new-card limit automatically when Anki opens, after sync, "
+            "or when this dialog closes. Always uses the last-saved settings."
+        )
+
+        settings_card, sf, _ = _make_card("Settings")
         sf.addRow("Daily budget:", budget_spin)
         sf.addRow("Finish in:", finish_spin)
         sf.addRow("", link_lbl)
         sf.addRow("Today's budget:", today_widget)
         sf.addRow("Daily cap:", cap_spin)
-        settings_group.setLayout(sf)
+        sf.addRow("Auto Apply:", auto_check)
 
-        # ── Forecast group ────────────────────────────────────────────
-        forecast_group = qt.QGroupBox("Forecast")
-
+        # ── Forecast ──────────────────────────────────────────────────
         def _ro_label() -> qt.QLabel:
             lbl = qt.QLabel("—")
+            lbl.setStyleSheet("background: transparent;")
             lbl.setTextInteractionFlags(
                 qt.Qt.TextInteractionFlag.TextSelectableByMouse
             )
@@ -264,25 +294,17 @@ def init() -> None:
         cost_val    = _ro_label()
         warn_lbl    = qt.QLabel("")
         warn_lbl.setWordWrap(True)
-        warn_lbl.setStyleSheet("color: #e8a020; font-weight: bold;")
+        warn_lbl.setStyleSheet("color: #e8a020; font-weight: bold; background: transparent;")
 
-        ff = qt.QFormLayout()
+        forecast_card, ff, fc_outer = _make_card("Forecast")
         ff.addRow("Today's new-card limit:", limit_val)
         ff.addRow("Already studied today (this deck):", studied_val)
         ff.addRow("Peak load:", peak_val)
         ff.addRow("Base load (existing):", base_val)
         ff.addRow("Cost model:", cost_val)
-        fc_vbox = qt.QVBoxLayout()
-        fc_vbox.addLayout(ff)
-        fc_vbox.addWidget(warn_lbl)
-        forecast_group.setLayout(fc_vbox)
+        fc_outer.addWidget(warn_lbl)
 
         # ── Bottom row ────────────────────────────────────────────────
-        auto_check = qt.QCheckBox("Auto Apply  (on open, sync & close)")
-        auto_check.setToolTip(
-            "Write the new-card limit automatically when Anki opens, after sync, "
-            "or when this dialog closes. Always uses the last-saved settings."
-        )
         save_btn   = qt.QPushButton("Save")
         save_btn.setToolTip("Save settings without writing today's limit")
         apply_btn  = qt.QPushButton("Apply Now")
@@ -291,7 +313,6 @@ def init() -> None:
         cancel_btn = qt.QPushButton("Cancel")
 
         bottom = qt.QHBoxLayout()
-        bottom.addWidget(auto_check)
         bottom.addStretch()
         bottom.addWidget(save_btn)
         bottom.addWidget(apply_btn)
@@ -299,9 +320,11 @@ def init() -> None:
 
         # ── Assemble ──────────────────────────────────────────────────
         main_layout = qt.QVBoxLayout()
+        main_layout.setContentsMargins(16, 12, 16, 12)
+        main_layout.setSpacing(12)
         main_layout.addLayout(deck_row)
-        main_layout.addWidget(settings_group)
-        main_layout.addWidget(forecast_group)
+        main_layout.addWidget(settings_card)
+        main_layout.addWidget(forecast_card)
         main_layout.addLayout(bottom)
         dialog.setLayout(main_layout)
 
@@ -340,22 +363,6 @@ def init() -> None:
             config["decks"] = [new_entry] + other
             aqt.mw.addonManager.writeConfig("time_budget", config)
             _dirty[0] = False
-
-        def _save_auto_apply_flag() -> None:
-            """Persist only the autoApply toggle immediately; don't touch dirty."""
-            if _updating[0]:
-                return
-            name = _current_name()
-            for e in config.get("decks", []):
-                pattern = e.get("deckNames", "")
-                if (isinstance(pattern, list) and name in pattern) or pattern == name:
-                    e["autoApply"] = auto_check.isChecked()
-                    aqt.mw.addonManager.writeConfig("time_budget", config)
-                    return
-            # No entry yet — create one but restore dirty state afterward.
-            was_dirty = _dirty[0]
-            _save_config()
-            _dirty[0] = was_dirty
 
         def _load_deck(name: str) -> None:
             """Populate widgets from saved config (no signals, no dirty change)."""
@@ -620,8 +627,7 @@ def init() -> None:
                 "Time Budget",
                 "Save changes?",
                 qt.QMessageBox.StandardButton.Save
-                | qt.QMessageBox.StandardButton.Discard
-                | qt.QMessageBox.StandardButton.Cancel,
+                | qt.QMessageBox.StandardButton.Discard,
                 qt.QMessageBox.StandardButton.Save,
             )
             if ret == qt.QMessageBox.StandardButton.Save:
@@ -629,8 +635,9 @@ def init() -> None:
                 on_proceed()
             elif ret == qt.QMessageBox.StandardButton.Discard:
                 on_proceed()
-            elif on_cancel:
-                on_cancel()
+            else:  # [x] or Escape — cancel the operation
+                if on_cancel:
+                    on_cancel()
 
         # ── Deck switch (with dirty check) ────────────────────────────
         def _on_deck_changed(_index: int) -> None:
@@ -814,7 +821,7 @@ def init() -> None:
             today_same_chk.stateChanged,
             lambda _: _on_today_same_toggled(today_same_chk.isChecked()),
         )
-        qconnect(auto_check.stateChanged, lambda _: _save_auto_apply_flag())
+        qconnect(auto_check.stateChanged, lambda _: _on_misc_changed())
         qconnect(save_btn.clicked,   _on_save)
         qconnect(apply_btn.clicked,  _on_apply)
         qconnect(cancel_btn.clicked, _on_cancel)
