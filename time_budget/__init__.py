@@ -44,22 +44,44 @@ def init() -> None:
                 continue
             if not entry.get("autoApply", False) and not force:
                 continue
-            budget  = float(entry.get("budgetMinutes", 30))
-            horizon = 3650
-            cap     = int(entry.get("dailyNewCap") or 9999)
+            budget = float(entry.get("budgetMinutes", 30))
+            cap    = int(entry.get("dailyNewCap") or 9999)
+            did    = int(deck_obj.id)
             try:
-                result = adapter.update_deck(
-                    did=int(deck_obj.id),
-                    budget_minutes=budget,
-                    horizon=horizon,
-                    daily_new_cap=cap,
-                    desired_retention_override=entry.get("desiredRetentionOverride"),
-                    dry_run=False,
-                    col=col,
-                )
+                dr, params = adapter.read_fsrs_params(col, did)
+                if params is None:
+                    result = DeckResult(
+                        deck_name=deck_obj.name, did=did,
+                        today_new_limit=0, completion_day=-1,
+                        feasible=False, cards_unscheduled=0,
+                        peak_minutes=0.0, base_peak_minutes=0.0,
+                        cost=adapter.CostModel(), plan=None,
+                        fsrs_disabled=True,
+                    )
+                else:
+                    kernel    = FsrsKernel(params=params, desired_retention=dr)
+                    cost      = adapter.read_cost_model(col, did)
+                    existing  = adapter.read_existing_cards(col, did)
+                    total_new = adapter.count_new_cards(col, did)
+                    horizon   = _adaptive_horizon(
+                        total_new, budget, cost, existing, kernel
+                    )
+                    plan = make_plan(existing, total_new, budget,
+                                     kernel, cost, horizon, cap)
+                    adapter.set_today_new_limit(col, did, plan.today())
+                    result = DeckResult(
+                        deck_name=deck_obj.name, did=did,
+                        today_new_limit=plan.today(),
+                        completion_day=plan.completion_day,
+                        feasible=plan.feasible,
+                        cards_unscheduled=plan.cards_unscheduled,
+                        peak_minutes=plan.peak_minutes(),
+                        base_peak_minutes=0.0,
+                        cost=cost, plan=plan,
+                    )
             except Exception as exc:
                 result = DeckResult(
-                    deck_name=deck_obj.name, did=int(deck_obj.id),
+                    deck_name=deck_obj.name, did=did,
                     today_new_limit=0, completion_day=-1,
                     feasible=False, cards_unscheduled=0,
                     peak_minutes=0.0, base_peak_minutes=0.0,
@@ -119,6 +141,24 @@ def init() -> None:
             else:
                 lo = mid
         return hi
+
+    def _adaptive_horizon(
+        total_new: int, budget_minutes: float, cost, existing, kernel,
+    ) -> int:
+        """Estimate a planning horizon that comfortably fits the full deck.
+
+        Rough estimate: (new cards / estimated daily throughput) * 3 + 60,
+        clamped to [30, 3650]. The 3× factor absorbs review-tail overhead
+        and base-load underestimation; the +60 adds a minimum buffer.
+        """
+        if total_new == 0:
+            return 30
+        per_review = kernel.dr * cost.sec_pass + (1.0 - kernel.dr) * cost.sec_lapse
+        base_est   = sum(s.mass for s in existing if s.due == 0) * per_review
+        avail_sec  = max(1.0, budget_minutes * 60.0 - base_est)
+        daily_new  = avail_sec / max(1.0, cost.sec_new)
+        rough_days = total_new / max(0.01, daily_new)
+        return max(30, min(3650, int(rough_days * 3) + 60))
 
     # ------------------------------------------------------------------
     # Unified dialog
@@ -383,8 +423,6 @@ def init() -> None:
                 warn_lbl.setText("")
 
         # ── Forward forecast: budget → forecast + update finish_spin ──
-        _PLAN_HORIZON = 3650  # look far enough ahead to find the real completion day
-
         def _run_forward_forecast() -> None:
             name = _current_name()
             did  = deck_id_map.get(name)
@@ -400,34 +438,54 @@ def init() -> None:
             today_budget = budget if today_same else float(today_spin.value())
 
             def _do(col) -> tuple:
-                studied   = _studied_today_minutes(col, did)
-                effective = max(0.5, today_budget - studied)
-
-                # Today's limit uses today's (possibly reduced) effective budget.
-                r = adapter.update_deck(
-                    did=did, budget_minutes=effective,
-                    horizon=_PLAN_HORIZON, daily_new_cap=cap, dry_run=True, col=col,
-                )
-                # Peak / completion always reflect the full daily baseline.
-                if not r.fsrs_disabled and not r.error:
-                    r_full = adapter.update_deck(
-                        did=did, budget_minutes=budget,
-                        horizon=_PLAN_HORIZON, daily_new_cap=cap, dry_run=True, col=col,
+                dr, params = adapter.read_fsrs_params(col, did)
+                studied    = _studied_today_minutes(col, did)
+                if params is None:
+                    deck_name = col.decks.get(did)["name"]
+                    dummy = DeckResult(
+                        deck_name=deck_name, did=did,
+                        today_new_limit=0, completion_day=-1,
+                        feasible=False, cards_unscheduled=0,
+                        peak_minutes=0.0, base_peak_minutes=0.0,
+                        cost=adapter.CostModel(), plan=None,
+                        fsrs_disabled=True,
                     )
-                    r.peak_minutes      = r_full.peak_minutes
-                    r.base_peak_minutes = r_full.base_peak_minutes
-                    r.cards_unscheduled = r_full.cards_unscheduled
-                    r.feasible          = r_full.feasible
-                    completion          = r_full.completion_day
-                else:
-                    completion = r.completion_day
-                return r, studied, completion
+                    return dummy, studied, -1, 30
+
+                kernel    = FsrsKernel(params=params, desired_retention=dr)
+                cost      = adapter.read_cost_model(col, did)
+                existing  = adapter.read_existing_cards(col, did)
+                total_new = adapter.count_new_cards(col, did)
+                horizon   = _adaptive_horizon(total_new, budget, cost, existing, kernel)
+
+                effective  = max(0.5, today_budget - studied)
+                plan_eff   = make_plan(existing, total_new, effective,
+                                       kernel, cost, horizon, cap)
+                plan_full  = make_plan(existing, total_new, budget,
+                                       kernel, cost, horizon, cap)
+                deck_name  = col.decks.get(did)["name"]
+                base_peak  = (
+                    max(plan_full.base_seconds) / 60.0
+                    if plan_full.base_seconds else 0.0
+                )
+                r = DeckResult(
+                    deck_name=deck_name, did=did,
+                    today_new_limit=plan_eff.today(),
+                    completion_day=plan_full.completion_day,
+                    feasible=plan_full.feasible,
+                    cards_unscheduled=plan_full.cards_unscheduled,
+                    peak_minutes=plan_full.peak_minutes(),
+                    base_peak_minutes=base_peak,
+                    cost=cost,
+                    plan=plan_eff,
+                )
+                return r, studied, plan_full.completion_day, horizon
 
             def _done(tup: tuple) -> None:
                 if _gen[0] != gen or not dialog.isVisible():
                     return
-                r, studied, completion = tup
-                _populate_forecast(r, studied, _PLAN_HORIZON)
+                r, studied, completion, horizon = tup
+                _populate_forecast(r, studied, horizon)
                 if not r.fsrs_disabled and not r.error and completion >= 0:
                     _updating[0] = True
                     finish_spin.blockSignals(True)
@@ -555,29 +613,24 @@ def init() -> None:
                 _updating[0] = False
             _on_misc_changed()
 
-        # ── Unsaved-changes popup ─────────────────────────────────────
+        # ── Unsaved-changes popup (matches Anki's native dialog style) ──
         def _ask_unsaved(on_proceed, on_cancel=None) -> None:
-            mb = qt.QMessageBox(dialog)
-            mb.setWindowTitle("Unsaved changes")
-            mb.setText("You have unsaved changes.")
-            discard_btn = mb.addButton(
-                "Close without saving", qt.QMessageBox.ButtonRole.DestructiveRole
+            ret = qt.QMessageBox.question(
+                dialog,
+                "Time Budget",
+                "Save changes?",
+                qt.QMessageBox.StandardButton.Save
+                | qt.QMessageBox.StandardButton.Discard
+                | qt.QMessageBox.StandardButton.Cancel,
+                qt.QMessageBox.StandardButton.Save,
             )
-            save_close_btn = mb.addButton(
-                "Save and close", qt.QMessageBox.ButtonRole.AcceptRole
-            )
-            mb.addButton("Cancel", qt.QMessageBox.ButtonRole.RejectRole)
-            mb.setDefaultButton(save_close_btn)
-            mb.exec()
-            clicked = mb.clickedButton()
-            if clicked is save_close_btn:
+            if ret == qt.QMessageBox.StandardButton.Save:
                 _save_config()
                 on_proceed()
-            elif clicked is discard_btn:
+            elif ret == qt.QMessageBox.StandardButton.Discard:
                 on_proceed()
-            else:
-                if on_cancel:
-                    on_cancel()
+            elif on_cancel:
+                on_cancel()
 
         # ── Deck switch (with dirty check) ────────────────────────────
         def _on_deck_changed(_index: int) -> None:
@@ -617,20 +670,45 @@ def init() -> None:
             entry = adapter.match_deck_configs(config, name) or {}
             if not entry.get("autoApply", False):
                 return
-            budget  = float(entry.get("budgetMinutes", 30))
-            cap     = int(entry.get("dailyNewCap") or 0) or 9999
+            budget = float(entry.get("budgetMinutes", 30))
+            cap    = int(entry.get("dailyNewCap") or 0) or 9999
+
+            def _op(col) -> DeckResult:
+                dr, params = adapter.read_fsrs_params(col, did)
+                if params is None:
+                    return DeckResult(
+                        deck_name=name, did=did,
+                        today_new_limit=0, completion_day=-1,
+                        feasible=False, cards_unscheduled=0,
+                        peak_minutes=0.0, base_peak_minutes=0.0,
+                        cost=adapter.CostModel(), plan=None,
+                        fsrs_disabled=True,
+                    )
+                kernel    = FsrsKernel(params=params, desired_retention=dr)
+                cost      = adapter.read_cost_model(col, did)
+                existing  = adapter.read_existing_cards(col, did)
+                total_new = adapter.count_new_cards(col, did)
+                horizon   = _adaptive_horizon(total_new, budget, cost, existing, kernel)
+                plan      = make_plan(existing, total_new, budget,
+                                      kernel, cost, horizon, cap)
+                adapter.set_today_new_limit(col, did, plan.today())
+                return DeckResult(
+                    deck_name=name, did=did,
+                    today_new_limit=plan.today(),
+                    completion_day=plan.completion_day,
+                    feasible=plan.feasible,
+                    cards_unscheduled=plan.cards_unscheduled,
+                    peak_minutes=plan.peak_minutes(),
+                    base_peak_minutes=0.0,
+                    cost=cost, plan=plan,
+                )
 
             def _success(r: DeckResult) -> None:
                 if not r.error and aqt.mw.state in ("deckBrowser", "overview"):
                     aqt.mw.reset()
 
             QueryOp(
-                parent=aqt.mw,
-                op=lambda col: adapter.update_deck(
-                    did=did, budget_minutes=budget, horizon=3650,
-                    daily_new_cap=cap, dry_run=False, col=col,
-                ),
-                success=_success,
+                parent=aqt.mw, op=_op, success=_success,
             ).run_in_background()
 
         def _do_close() -> None:
@@ -667,11 +745,41 @@ def init() -> None:
             today_bgt  = budget if today_same else float(today_spin.value())
 
             def _do(col) -> tuple:
-                studied   = _studied_today_minutes(col, did)
+                dr, params = adapter.read_fsrs_params(col, did)
+                studied    = _studied_today_minutes(col, did)
+                if params is None:
+                    deck_name = col.decks.get(did)["name"]
+                    return DeckResult(
+                        deck_name=deck_name, did=did,
+                        today_new_limit=0, completion_day=-1,
+                        feasible=False, cards_unscheduled=0,
+                        peak_minutes=0.0, base_peak_minutes=0.0,
+                        cost=adapter.CostModel(), plan=None,
+                        fsrs_disabled=True,
+                    ), studied
+
+                kernel    = FsrsKernel(params=params, desired_retention=dr)
+                cost      = adapter.read_cost_model(col, did)
+                existing  = adapter.read_existing_cards(col, did)
+                total_new = adapter.count_new_cards(col, did)
+                horizon   = _adaptive_horizon(total_new, budget, cost, existing, kernel)
                 effective = max(0.5, today_bgt - studied)
-                r = adapter.update_deck(
-                    did=did, budget_minutes=effective, horizon=_PLAN_HORIZON,
-                    daily_new_cap=cap, dry_run=False, col=col,
+                plan      = make_plan(existing, total_new, effective,
+                                      kernel, cost, horizon, cap)
+                adapter.set_today_new_limit(col, did, plan.today())
+                deck_name = col.decks.get(did)["name"]
+                base_peak = (
+                    max(plan.base_seconds) / 60.0 if plan.base_seconds else 0.0
+                )
+                r = DeckResult(
+                    deck_name=deck_name, did=did,
+                    today_new_limit=plan.today(),
+                    completion_day=plan.completion_day,
+                    feasible=plan.feasible,
+                    cards_unscheduled=plan.cards_unscheduled,
+                    peak_minutes=plan.peak_minutes(),
+                    base_peak_minutes=base_peak,
+                    cost=cost, plan=plan,
                 )
                 return r, studied
 
@@ -739,21 +847,10 @@ def init() -> None:
     menu = qt.QMenu("Time Budget", aqt.mw)
     aqt.mw.form.menuTools.addMenu(menu)
 
-    open_action      = qt.QAction("Open…", menu)
-    apply_all_action = qt.QAction("Apply All Decks", menu)
+    open_action = qt.QAction("Open…", menu)
     menu.addAction(open_action)
-    menu.addSeparator()
-    menu.addAction(apply_all_action)
 
     qconnect(open_action.triggered, show_main_dialog)
-    qconnect(
-        apply_all_action.triggered,
-        lambda: QueryOp(
-            parent=aqt.mw,
-            op=lambda col: run_all(col, force=True),
-            success=_on_run_all_done,
-        ).run_in_background(),
-    )
 
 
 if not os.environ.get("TEST"):
