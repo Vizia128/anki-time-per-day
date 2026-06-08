@@ -618,7 +618,9 @@ def init() -> None:
                 today_spin.setValue(budget_spin.value())
                 today_spin.blockSignals(False)
                 _updating[0] = False
-            _on_misc_changed()
+            # Today override is ephemeral (not saved to config) — refresh
+            # forecast without marking the form dirty.
+            _debounce_fwd.start()
 
         # ── Unsaved-changes popup (matches Anki's native dialog style) ──
         def _ask_unsaved(on_proceed, on_cancel=None) -> None:
@@ -816,7 +818,8 @@ def init() -> None:
         qconnect(budget_spin.valueChanged,       _on_budget_changed)
         qconnect(finish_spin.valueChanged,       _on_finish_changed)
         qconnect(cap_spin.valueChanged,          _on_misc_changed)
-        qconnect(today_spin.valueChanged,        _on_misc_changed)
+        qconnect(today_spin.valueChanged,
+                 lambda _: _debounce_fwd.start() if not _updating[0] else None)
         qconnect(
             today_same_chk.stateChanged,
             lambda _: _on_today_same_toggled(today_same_chk.isChecked()),
