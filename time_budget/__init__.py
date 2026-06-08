@@ -36,7 +36,9 @@ def init() -> None:
     # Background "apply all" — used by hooks and "Apply All Decks" menu
     # ------------------------------------------------------------------
     def run_all(col, *, force: bool = False) -> list[DeckResult]:
-        config = aqt.mw.addonManager.getConfig("time_budget") or {}
+        config     = aqt.mw.addonManager.getConfig("time_budget") or {}
+        day_cutoff = col.sched.day_cutoff
+        overrides  = config.get("todayOverrides", {})
         results: list[DeckResult] = []
         for deck_obj in col.decks.all_names_and_ids(include_filtered=False):
             entry = adapter.match_deck_configs(config, deck_obj.name)
@@ -47,6 +49,12 @@ def init() -> None:
             budget = float(entry.get("budgetMinutes", 30))
             cap    = int(entry.get("dailyNewCap") or 9999)
             did    = int(deck_obj.id)
+            ov = overrides.get(deck_obj.name)
+            today_budget = (
+                float(ov["budgetMinutes"])
+                if ov and ov.get("dayCutoff") == day_cutoff
+                else budget
+            )
             try:
                 dr, params = adapter.read_fsrs_params(col, did)
                 if params is None:
@@ -68,10 +76,18 @@ def init() -> None:
                     )
                     plan = make_plan(existing, total_new, budget,
                                      kernel, cost, horizon, cap)
-                    adapter.set_today_new_limit(col, did, plan.today())
+                    if today_budget != budget:
+                        studied   = _studied_today_minutes(col, did)
+                        effective = max(0.5, today_budget - studied)
+                        plan_eff  = make_plan(existing, total_new, effective,
+                                              kernel, cost, horizon, cap)
+                        today_limit = plan_eff.today()
+                    else:
+                        today_limit = plan.today()
+                    adapter.set_today_new_limit(col, did, today_limit)
                     result = DeckResult(
                         deck_name=deck_obj.name, did=did,
-                        today_new_limit=plan.today(),
+                        today_new_limit=today_limit,
                         completion_day=plan.completion_day,
                         feasible=plan.feasible,
                         cards_unscheduled=plan.cards_unscheduled,
@@ -364,6 +380,28 @@ def init() -> None:
             aqt.mw.addonManager.writeConfig("time_budget", config)
             _dirty[0] = False
 
+        def _today_day_cutoff() -> int:
+            return aqt.mw.col.sched.day_cutoff
+
+        def _load_today_override(name: str):
+            """Return stored today budget (float) if still valid for today, else None."""
+            entry = config.get("todayOverrides", {}).get(name)
+            if entry and entry.get("dayCutoff") == _today_day_cutoff():
+                return float(entry["budgetMinutes"])
+            return None
+
+        def _persist_today_override(name: str, budget_minutes) -> None:
+            """Save or clear today's override. Writes config; does not touch deck settings."""
+            overrides = config.setdefault("todayOverrides", {})
+            if budget_minutes is None:
+                overrides.pop(name, None)
+            else:
+                overrides[name] = {
+                    "budgetMinutes": float(budget_minutes),
+                    "dayCutoff": _today_day_cutoff(),
+                }
+            aqt.mw.addonManager.writeConfig("time_budget", config)
+
         def _load_deck(name: str) -> None:
             """Populate widgets from saved config (no signals, no dirty change)."""
             entry = adapter.match_deck_configs(config, name) or {}
@@ -371,13 +409,20 @@ def init() -> None:
             for w in (budget_spin, finish_spin, cap_spin,
                       today_same_chk, today_spin, auto_check):
                 w.blockSignals(True)
-            budget_spin.setValue(float(entry.get("budgetMinutes", 30)))
+            budget_val = float(entry.get("budgetMinutes", 30))
+            budget_spin.setValue(budget_val)
             finish_spin.setValue(int(entry.get("horizonDays", 365)))
             cap_spin.setValue(int(entry.get("dailyNewCap") or 0))
-            today_same_chk.setChecked(True)
-            today_spin.setValue(float(entry.get("budgetMinutes", 30)))
-            today_spin.setEnabled(False)
             auto_check.setChecked(bool(entry.get("autoApply", False)))
+            override = _load_today_override(name)
+            if override is not None:
+                today_same_chk.setChecked(False)
+                today_spin.setValue(override)
+                today_spin.setEnabled(True)
+            else:
+                today_same_chk.setChecked(True)
+                today_spin.setValue(budget_val)
+                today_spin.setEnabled(False)
             for w in (budget_spin, finish_spin, cap_spin,
                       today_same_chk, today_spin, auto_check):
                 w.blockSignals(False)
@@ -582,6 +627,40 @@ def init() -> None:
         _debounce_rev.setInterval(400)
         qconnect(_debounce_rev.timeout, _run_reverse_forecast)
 
+        _debounce_apply = qt.QTimer(dialog)
+        _debounce_apply.setSingleShot(True)
+        _debounce_apply.setInterval(600)
+
+        def _do_apply_today() -> None:
+            """Write today's new-card limit immediately after the override changes."""
+            name = _current_name()
+            did  = deck_id_map.get(name)
+            if did is None:
+                return
+            budget     = float(budget_spin.value())
+            cap        = int(cap_spin.value()) or 9999
+            today_same = today_same_chk.isChecked()
+            today_bgt  = budget if today_same else float(today_spin.value())
+
+            def _op(col) -> None:
+                dr, params = adapter.read_fsrs_params(col, did)
+                if params is None:
+                    return
+                kernel    = FsrsKernel(params=params, desired_retention=dr)
+                cost      = adapter.read_cost_model(col, did)
+                existing  = adapter.read_existing_cards(col, did)
+                total_new = adapter.count_new_cards(col, did)
+                studied   = _studied_today_minutes(col, did)
+                horizon   = _adaptive_horizon(total_new, budget, cost, existing, kernel)
+                effective = max(0.5, today_bgt - studied)
+                plan      = make_plan(existing, total_new, effective,
+                                      kernel, cost, horizon, cap)
+                adapter.set_today_new_limit(col, did, plan.today())
+
+            QueryOp(parent=dialog, op=_op, success=lambda _: None).run_in_background()
+
+        qconnect(_debounce_apply.timeout, _do_apply_today)
+
         # ── Signal handlers ───────────────────────────────────────────
         def _on_budget_changed(_val) -> None:
             if _updating[0]:
@@ -618,8 +697,12 @@ def init() -> None:
                 today_spin.setValue(budget_spin.value())
                 today_spin.blockSignals(False)
                 _updating[0] = False
-            # Today override is ephemeral (not saved to config) — refresh
-            # forecast without marking the form dirty.
+            name = _current_name()
+            if checked:
+                _persist_today_override(name, None)
+            else:
+                _persist_today_override(name, today_spin.value())
+            _debounce_apply.start()
             _debounce_fwd.start()
 
         # ── Unsaved-changes popup (matches Anki's native dialog style) ──
@@ -681,8 +764,16 @@ def init() -> None:
                 return
             budget = float(entry.get("budgetMinutes", 30))
             cap    = int(entry.get("dailyNewCap") or 0) or 9999
+            ov = config.get("todayOverrides", {}).get(name)
+            ov_budget    = float(ov["budgetMinutes"]) if ov else None
+            ov_day_cutoff = ov.get("dayCutoff") if ov else None
 
             def _op(col) -> DeckResult:
+                today_budget = (
+                    ov_budget
+                    if ov_budget is not None and ov_day_cutoff == col.sched.day_cutoff
+                    else budget
+                )
                 dr, params = adapter.read_fsrs_params(col, did)
                 if params is None:
                     return DeckResult(
@@ -700,10 +791,18 @@ def init() -> None:
                 horizon   = _adaptive_horizon(total_new, budget, cost, existing, kernel)
                 plan      = make_plan(existing, total_new, budget,
                                       kernel, cost, horizon, cap)
-                adapter.set_today_new_limit(col, did, plan.today())
+                if today_budget != budget:
+                    studied   = _studied_today_minutes(col, did)
+                    effective = max(0.5, today_budget - studied)
+                    plan_eff  = make_plan(existing, total_new, effective,
+                                          kernel, cost, horizon, cap)
+                    today_limit = plan_eff.today()
+                else:
+                    today_limit = plan.today()
+                adapter.set_today_new_limit(col, did, today_limit)
                 return DeckResult(
                     deck_name=name, did=did,
-                    today_new_limit=plan.today(),
+                    today_new_limit=today_limit,
                     completion_day=plan.completion_day,
                     feasible=plan.feasible,
                     cards_unscheduled=plan.cards_unscheduled,
@@ -818,8 +917,15 @@ def init() -> None:
         qconnect(budget_spin.valueChanged,       _on_budget_changed)
         qconnect(finish_spin.valueChanged,       _on_finish_changed)
         qconnect(cap_spin.valueChanged,          _on_misc_changed)
-        qconnect(today_spin.valueChanged,
-                 lambda _: _debounce_fwd.start() if not _updating[0] else None)
+        def _on_today_spin_changed(_val) -> None:
+            if _updating[0]:
+                return
+            if not today_same_chk.isChecked():
+                _persist_today_override(_current_name(), today_spin.value())
+                _debounce_apply.start()
+            _debounce_fwd.start()
+
+        qconnect(today_spin.valueChanged, _on_today_spin_changed)
         qconnect(
             today_same_chk.stateChanged,
             lambda _: _on_today_same_toggled(today_same_chk.isChecked()),
