@@ -76,14 +76,11 @@ def init() -> None:
                     )
                     plan = make_plan(existing, total_new, budget,
                                      kernel, cost, horizon, cap)
-                    if today_budget != budget:
-                        studied   = _studied_today_minutes(col, did)
-                        effective = max(0.5, today_budget - studied)
-                        plan_eff  = make_plan(existing, total_new, effective,
-                                              kernel, cost, horizon, cap)
-                        today_limit = plan_eff.today()
-                    else:
-                        today_limit = plan.today()
+                    studied   = _studied_today_minutes(col, did)
+                    effective = max(0.5, today_budget - studied)
+                    plan_eff  = make_plan(existing, total_new, effective,
+                                          kernel, cost, horizon, cap)
+                    today_limit = plan_eff.today()
                     adapter.set_today_new_limit(col, did, today_limit)
                     result = DeckResult(
                         deck_name=deck_obj.name, did=did,
@@ -791,14 +788,11 @@ def init() -> None:
                 horizon   = _adaptive_horizon(total_new, budget, cost, existing, kernel)
                 plan      = make_plan(existing, total_new, budget,
                                       kernel, cost, horizon, cap)
-                if today_budget != budget:
-                    studied   = _studied_today_minutes(col, did)
-                    effective = max(0.5, today_budget - studied)
-                    plan_eff  = make_plan(existing, total_new, effective,
-                                          kernel, cost, horizon, cap)
-                    today_limit = plan_eff.today()
-                else:
-                    today_limit = plan.today()
+                studied   = _studied_today_minutes(col, did)
+                effective = max(0.5, today_budget - studied)
+                plan_eff  = make_plan(existing, total_new, effective,
+                                      kernel, cost, horizon, cap)
+                today_limit = plan_eff.today()
                 adapter.set_today_new_limit(col, did, today_limit)
                 return DeckResult(
                     deck_name=name, did=did,
