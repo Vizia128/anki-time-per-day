@@ -6,7 +6,7 @@
       "horizonDays": 365,
       "dailyNewCap": null,
       "desiredRetentionOverride": null,
-      "autoApply": false
+      "active": false
     }
   ]
 }

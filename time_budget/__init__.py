@@ -44,7 +44,7 @@ def init() -> None:
             entry = adapter.match_deck_configs(config, deck_obj.name)
             if entry is None:
                 continue
-            if not entry.get("autoApply", False) and not force:
+            if not entry.get("active", False) and not force:
                 continue
             budget = float(entry.get("budgetMinutes", 30))
             cap    = int(entry.get("dailyNewCap") or 9999)
@@ -279,8 +279,8 @@ def init() -> None:
 
         auto_check = qt.QCheckBox()
         auto_check.setToolTip(
-            "Write the new-card limit automatically when Anki opens, after sync, "
-            "or when this dialog closes. Always uses the last-saved settings."
+            "Write the new-card limit automatically when Anki opens or after sync. "
+            "Saving or closing this dialog always applies the limit."
         )
 
         settings_card, sf, _ = _make_card("Settings")
@@ -289,7 +289,7 @@ def init() -> None:
         sf.addRow("", link_lbl)
         sf.addRow("Today's budget:", today_widget)
         sf.addRow("Daily cap:", cap_spin)
-        sf.addRow("Auto Apply:", auto_check)
+        sf.addRow("Active:", auto_check)
 
         # ── Forecast ──────────────────────────────────────────────────
         def _ro_label() -> qt.QLabel:
@@ -319,16 +319,13 @@ def init() -> None:
 
         # ── Bottom row ────────────────────────────────────────────────
         save_btn   = qt.QPushButton("Save")
-        save_btn.setToolTip("Save settings without writing today's limit")
-        apply_btn  = qt.QPushButton("Apply Now")
-        apply_btn.setDefault(True)
-        apply_btn.setToolTip("Save settings and write today's new-card limit immediately")
+        save_btn.setDefault(True)
+        save_btn.setToolTip("Save settings and apply today's new-card limit")
         cancel_btn = qt.QPushButton("Cancel")
 
         bottom = qt.QHBoxLayout()
         bottom.addStretch()
         bottom.addWidget(save_btn)
-        bottom.addWidget(apply_btn)
         bottom.addWidget(cancel_btn)
 
         # ── Assemble ──────────────────────────────────────────────────
@@ -360,7 +357,7 @@ def init() -> None:
                 "horizonDays": int(finish_spin.value()),
                 "dailyNewCap": int(cap_val) if cap_val > 0 else None,
                 "desiredRetentionOverride": None,
-                "autoApply": auto_check.isChecked(),
+                "active": auto_check.isChecked(),
             }
 
         def _save_config() -> None:
@@ -410,7 +407,7 @@ def init() -> None:
             budget_spin.setValue(budget_val)
             finish_spin.setValue(int(entry.get("horizonDays", 365)))
             cap_spin.setValue(int(entry.get("dailyNewCap") or 0))
-            auto_check.setChecked(bool(entry.get("autoApply", False)))
+            auto_check.setChecked(bool(entry.get("active", False)))
             override = _load_today_override(name)
             if override is not None:
                 today_same_chk.setChecked(False)
@@ -757,7 +754,7 @@ def init() -> None:
             if did is None:
                 return
             entry = adapter.match_deck_configs(config, name) or {}
-            if not entry.get("autoApply", False):
+            if not entry:
                 return
             budget = float(entry.get("budgetMinutes", 30))
             cap    = int(entry.get("dailyNewCap") or 0) or 9999
@@ -833,7 +830,7 @@ def init() -> None:
 
         # ── Button handlers ───────────────────────────────────────────
         def _on_save() -> None:
-            _save_config()
+            _on_apply()
 
         def _on_apply() -> None:
             _save_config()
@@ -926,7 +923,6 @@ def init() -> None:
         )
         qconnect(auto_check.stateChanged, lambda _: _on_misc_changed())
         qconnect(save_btn.clicked,   _on_save)
-        qconnect(apply_btn.clicked,  _on_apply)
         qconnect(cancel_btn.clicked, _on_cancel)
 
         # ── Initialise with first deck ────────────────────────────────

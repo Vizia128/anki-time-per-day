@@ -35,15 +35,13 @@ Override the desired retention used for planning. When `null` (default), the
 value from the deck's FSRS preset is used. Set to e.g. `0.85` to plan for a
 lower retention target without changing the preset.
 
-### `autoApply` *(boolean, default false)*
+### `active` *(boolean, default false)*
 
-When `false` (the default), the add-on **never** changes your deck's new-card
-limit automatically. Use **Tools → Time Budget: Apply Now** to apply limits
-manually, or **Tools → Time Budget: Preview** to see what the limits would be
-without changing anything.
+When `false` (the default), the add-on only writes the new-card limit when you
+save or close the Time Budget dialog.
 
-When `true`, the limit is written automatically when Anki opens and after each
-sync.
+When `true`, the limit is also written automatically when Anki opens and after
+each sync.
 
 ## Example
 
@@ -56,7 +54,7 @@ sync.
       "horizonDays": 365,
       "dailyNewCap": 15,
       "desiredRetentionOverride": null,
-      "autoApply": true
+      "active": true
     },
     {
       "deckNames": ".*",
@@ -64,7 +62,7 @@ sync.
       "horizonDays": 365,
       "dailyNewCap": null,
       "desiredRetentionOverride": null,
-      "autoApply": false
+      "active": false
     }
   ]
 }

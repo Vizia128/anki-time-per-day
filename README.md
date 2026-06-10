@@ -71,7 +71,7 @@ Settings are stored in Anki's add-on config system (`config.json` / the Add-ons 
       "budgetMinutes": 30,
       "horizonDays": 365,
       "dailyNewCap": null,
-      "autoApply": false
+      "active": false
     }
   ]
 }
@@ -83,7 +83,7 @@ Settings are stored in Anki's add-on config system (`config.json` / the Add-ons 
 | `budgetMinutes` | float | `30` | Daily study-time budget in minutes. |
 | `horizonDays` | int | `365` | Planning horizon. The add-on also auto-estimates a minimum horizon based on deck size. |
 | `dailyNewCap` | int or null | `null` | Maximum new cards per day. `null` means no cap. |
-| `autoApply` | bool | `false` | Automatically apply limits on Anki open and after sync. |
+| `active` | bool | `false` | Automatically apply limits when Anki opens and after sync. Saving or closing the dialog always applies regardless of this setting. |
 
 ## Development
 
