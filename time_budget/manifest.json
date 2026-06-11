@@ -1,1 +1,7 @@
-{"package": "time_budget", "name": "Time Budget Scheduler"}
+{
+  "package": "time_budget",
+  "name": "Time Budget Scheduler",
+  "human_version": "0.1.0",
+  "min_point_version": 250200,
+  "homepage": "https://github.com/julianzia/anki-time-per-day"
+}

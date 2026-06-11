@@ -11,14 +11,18 @@ Single unified UI:  Tools → Time Budget → Open…
       – Daily cap
   • Live forecast  (debounced 400 ms)
   • Dirty tracking + "unsaved changes" popup on close / deck switch
-  • Save (config only) | Apply Now (config + limit) | Cancel (dirty check)
-  • Auto Apply: fires on dialog close, profile open, and after sync —
-    always uses the last-saved settings, never the live spinbox values.
+  • Save (saves config and applies today's limit) | Cancel (dirty check)
+  • Auto-apply: fires on dialog close, and on profile open / after sync
+    for decks marked Active — always uses the last-saved settings.
 """
 
 from __future__ import annotations
 
 import os
+
+# Resolve the add-on's package/folder name at runtime. When installed from
+# AnkiWeb the folder is a numeric ID, so the name must never be hardcoded.
+ADDON_PACKAGE = __name__.split(".")[0]
 
 
 def init() -> None:
@@ -36,7 +40,7 @@ def init() -> None:
     # Background "apply all" — used by hooks and "Apply All Decks" menu
     # ------------------------------------------------------------------
     def run_all(col, *, force: bool = False) -> list[DeckResult]:
-        config     = aqt.mw.addonManager.getConfig("time_budget") or {}
+        config     = aqt.mw.addonManager.getConfig(ADDON_PACKAGE) or {}
         day_cutoff = col.sched.day_cutoff
         overrides  = config.get("todayOverrides", {})
         results: list[DeckResult] = []
@@ -189,7 +193,7 @@ def init() -> None:
         deck_names  = [d.name for d in all_decks]
         deck_id_map = {d.name: int(d.id) for d in all_decks}
 
-        config: dict = aqt.mw.addonManager.getConfig("time_budget") or {"decks": []}
+        config: dict = aqt.mw.addonManager.getConfig(ADDON_PACKAGE) or {"decks": []}
 
         # ── Dialog shell ──────────────────────────────────────────────
         dialog = qt.QDialog(aqt.mw)
@@ -371,7 +375,7 @@ def init() -> None:
                 )
             ]
             config["decks"] = [new_entry] + other
-            aqt.mw.addonManager.writeConfig("time_budget", config)
+            aqt.mw.addonManager.writeConfig(ADDON_PACKAGE, config)
             _dirty[0] = False
 
         def _today_day_cutoff() -> int:
@@ -394,7 +398,7 @@ def init() -> None:
                     "budgetMinutes": float(budget_minutes),
                     "dayCutoff": _today_day_cutoff(),
                 }
-            aqt.mw.addonManager.writeConfig("time_budget", config)
+            aqt.mw.addonManager.writeConfig(ADDON_PACKAGE, config)
 
         def _load_deck(name: str) -> None:
             """Populate widgets from saved config (no signals, no dirty change)."""

@@ -1,6 +1,6 @@
 """
-time_budget_scheduler.py
-========================
+scheduler.py
+============
 
 Core logic for an Anki add-on that sets a *daily study-time budget* instead of a
 fixed new-cards/day count, and dynamically chooses how many new cards to
@@ -11,7 +11,7 @@ introduce each day so that:
 
 This module is intentionally free of any Anki imports so it can be unit-tested
 in isolation. The thin layer that reads a live collection lives in
-`anki_adapter.py`; it produces the same plain inputs this module consumes.
+`adapter.py`; it produces the same plain inputs this module consumes.
 
 Three pieces:
   1. FsrsKernel        - FSRS-6 memory dynamics (mirrors open-spaced-repetition/py-fsrs)

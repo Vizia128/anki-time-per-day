@@ -14,6 +14,11 @@ The core algorithm is a **greedy receding-horizon controller** built on FSRS-6:
 
 This gives you a sustainable pace that uses every minute of your budget without burning yourself out.
 
+## Requirements
+
+- **Anki 25.02 or newer** (the add-on reads FSRS-6 parameters, which older versions don't store).
+- **FSRS enabled** for the decks you want to manage (Deck Options → FSRS). Decks still on the older SM-2 scheduler are skipped with a warning.
+
 ## Installation
 
 ### From release
@@ -42,13 +47,12 @@ Open **Tools → Time Budget → Open…** to configure a deck.
 | **Finish in** | Target days to finish all new cards. Edit either field; the other updates automatically via binary search. |
 | **Today's budget** | One-off override for today only. Uncheck "Same as daily budget" to enter a custom value. Does not affect saved settings. |
 | **Daily cap** | Hard ceiling on new cards per day regardless of budget headroom. Useful if you want to pace introduction even when you have spare time. |
-| **Auto Apply** | When enabled, the add-on automatically sets your new-card limit when Anki opens and after each sync, using the saved daily budget. |
+| **Active** | When enabled, the add-on automatically sets your new-card limit when Anki opens and after each sync, using the saved daily budget. |
 
 ### Buttons
 
-- **Save** — Persist settings to config without changing today's limit.
-- **Apply Now** — Save settings and immediately set today's new-card limit (uses Today's budget if overridden).
-- **Cancel** — Close without applying (prompts to save if there are unsaved changes).
+- **Save** — Save settings and immediately set today's new-card limit (uses Today's budget if overridden).
+- **Cancel** — Close the dialog (prompts to save if there are unsaved changes). Closing the dialog applies the last-saved settings.
 
 ### Forecast panel
 
