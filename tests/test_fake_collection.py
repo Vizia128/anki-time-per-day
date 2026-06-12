@@ -7,6 +7,7 @@ Requires: pip install anki
 All tests are self-contained: they build a throwaway collection, assert, then
 close it. Nothing touches real Anki profiles.
 """
+
 from __future__ import annotations
 
 import time_budget.adapter as A
@@ -23,7 +24,7 @@ from .fake_collection_builder import (
 
 
 # ---------------------------------------------------------------------------
-# 1. Original test (port of ideas/fake_collection.py::test_adapter_against_fake_collection)
+# 1. Original test (port of the ideas/fake_collection.py adapter test)
 # ---------------------------------------------------------------------------
 def test_original_fake_collection():
     col, did, path = build_fake_collection(n_review=250, n_new=1750)
@@ -35,7 +36,7 @@ def test_original_fake_collection():
         cost = A.read_cost_model(col, did)
         assert abs(cost.sec_pass - 7.0) < 0.5, cost
         assert abs(cost.sec_lapse - 14.0) < 0.5, cost
-        assert abs(cost.sec_new - 22.0) < 1.0, cost   # two 11 s steps
+        assert abs(cost.sec_new - 22.0) < 1.0, cost  # two 11 s steps
 
         seeds = A.read_existing_cards(col, did)
         assert len(seeds) == 250, len(seeds)
@@ -44,8 +45,15 @@ def test_original_fake_collection():
         assert A.count_new_cards(col, did) == 1750
 
         kernel = FsrsKernel(params=params, desired_retention=dr)
-        plan = make_plan(seeds, A.count_new_cards(col, did), 30.0, kernel, cost,
-                         horizon=400, daily_new_cap=200)
+        plan = make_plan(
+            seeds,
+            A.count_new_cards(col, did),
+            30.0,
+            kernel,
+            cost,
+            horizon=400,
+            daily_new_cap=200,
+        )
         assert plan.peak_minutes() <= 30.0 + 1e-6
         assert plan.today() > 0
 
@@ -147,7 +155,8 @@ def test_suspended_cards_excluded():
         # Suspended cards are excluded from existing-card seeds too
         seeds = A.read_existing_cards(col, did)
         assert len(seeds) == 50, (
-            f"Expected 50 review seeds (suspensions were on new cards), got {len(seeds)}"
+            f"Expected 50 review seeds (suspensions were on new cards), "
+            f"got {len(seeds)}"
         )
     finally:
         col.close()
@@ -228,7 +237,8 @@ def test_dry_run_writes_nothing():
         limit_after = deck.get("newLimitToday")
 
         assert limit_after == limit_before, (
-            f"dry_run=True should not write limit; before={limit_before}, after={limit_after}"
+            f"dry_run=True should not write limit; "
+            f"before={limit_before}, after={limit_after}"
         )
         assert result.today_new_limit > 0, "Expected a non-zero planned limit"
         assert result.fsrs_disabled is False
@@ -250,7 +260,8 @@ def test_compute_deck_plan_subtracts_studied_time():
         spent = A.compute_deck_plan(col, did, budget_minutes=30.0)
         # Same long-term budget, but today's budget leaves 30 min headroom.
         fresh = A.compute_deck_plan(
-            col, did,
+            col,
+            did,
             budget_minutes=30.0,
             today_budget_minutes=studied + 30.0,
         )

@@ -5,6 +5,7 @@ Pure-Python tests for the config validation layer. The config is editable as
 raw JSON in Anki's add-on manager, so these focus on hostile input: wrong
 types, missing keys, out-of-range values, broken regex patterns.
 """
+
 from __future__ import annotations
 
 from time_budget.constants import DEFAULT_BUDGET_MINUTES, DEFAULT_HORIZON_DAYS
@@ -149,9 +150,7 @@ CUTOFF = 1_750_000_000
 
 def test_today_override_valid():
     config = {
-        "todayOverrides": {
-            "My Deck": {"budgetMinutes": 12.5, "dayCutoff": CUTOFF}
-        }
+        "todayOverrides": {"My Deck": {"budgetMinutes": 12.5, "dayCutoff": CUTOFF}}
     }
     assert today_override_minutes(config, "My Deck", CUTOFF) == 12.5
 

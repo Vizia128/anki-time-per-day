@@ -4,3 +4,22 @@ pythonpath = ["."]
 
 [tool.ruff]
 src = ["time_budget"]
+line-length = 88
+target-version = "py39"
+extend-exclude = ["ideas", "anki-addon-limit-new-by-young"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # import sorting
+    "UP",  # pyupgrade
+    "B",   # bugbear
+    "SIM", # simplify
+]
+ignore = [
+    # The kernel/forecaster math uses FSRS notation (s, d, r, w) on purpose;
+    # see the Notation section in scheduler.py.
+    "E741",
+]

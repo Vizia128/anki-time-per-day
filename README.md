@@ -96,18 +96,23 @@ Settings are stored in Anki's add-on config system (`config.json` / the Add-ons 
 ### Requirements
 
 ```bash
-pip install anki pytest
+pip install -r requirements-dev.txt
 ```
 
-### Running tests
+### Running tests and lint
 
 ```bash
 pytest -v
+ruff check time_budget tests build.py
+ruff format --check time_budget tests build.py
 ```
 
-Tests are split into two groups:
-- **Pure logic** (`tests/test_kernel.py`, `tests/test_controller.py`) — no Anki dependency, fast.
-- **Integration** (`tests/test_fake_collection.py`) — uses a headless in-memory Anki collection.
+Both also run in CI (GitHub Actions) on every push and pull request.
+
+Tests are split into three groups:
+- **Pure logic** (`tests/test_kernel.py`, `tests/test_controller.py`, `tests/test_settings.py`) — no Anki dependency, fast.
+- **Integration** (`tests/test_fake_collection.py`) — uses a headless throwaway Anki collection.
+- The kernel test replays 400 random review sequences against the `py-fsrs` reference implementation and requires agreement to < 1e-6.
 
 ### Building
 
@@ -126,6 +131,7 @@ time_budget/
   adapter.py      # Anki collection interface + planning pipeline
   ui.py           # The Time Budget dialog
   hooks.py        # Auto-apply on profile open / after sync
+  settings.py     # Validated view of the user-editable config
   constants.py    # Shared constants
   config.json     # Default config
   manifest.json   # Add-on metadata

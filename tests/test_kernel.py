@@ -5,6 +5,7 @@ test_kernel.py
 2. Replay 400 random rating sequences through FsrsKernel vs py-fsrs reference.
    Asserts: max relative S error < 1e-6, max D error < 1e-6, max interval error < 1 day.
 """
+
 from __future__ import annotations
 
 import random
@@ -21,7 +22,9 @@ def test_no_anki_import():
         sys.modules.pop(k)
     try:
         import importlib
+
         import time_budget.scheduler as sched_mod
+
         importlib.reload(sched_mod)
         assert hasattr(sched_mod, "FsrsKernel")
         assert hasattr(sched_mod, "make_plan")
@@ -34,7 +37,6 @@ def test_no_anki_import():
 def test_kernel_matches_py_fsrs():
     """Port of ideas/validate_kernel.py — kernel must agree with py-fsrs to < 1e-6."""
     from fsrs import Card, Rating, Scheduler
-
     from time_budget.scheduler import AGAIN, EASY, GOOD, HARD, FsrsKernel
 
     DR = 0.9
@@ -72,15 +74,15 @@ def test_kernel_matches_py_fsrs():
                 our_d = k.next_difficulty(our_d, rating)
 
             card, _ = ref_sched.review_card(card, Rating(rating), review_datetime=now)
-            max_s_err = max(max_s_err, abs(card.stability - our_s) / max(card.stability, 1e-6))
+            max_s_err = max(
+                max_s_err, abs(card.stability - our_s) / max(card.stability, 1e-6)
+            )
             max_d_err = max(max_d_err, abs(card.difficulty - our_d))
 
     for s in [0.5, 1, 3, 10, 35, 100, 400]:
         iv_ours = k.next_interval(s)
         decay = ref_sched.parameters[20]
-        iv_ref = round(
-            (s / (0.9 ** (1 / (-decay)) - 1)) * (DR ** (1 / (-decay)) - 1)
-        )
+        iv_ref = round((s / (0.9 ** (1 / (-decay)) - 1)) * (DR ** (1 / (-decay)) - 1))
         max_ivl_err = max(max_ivl_err, abs(iv_ours - max(1, iv_ref)))
 
     assert max_s_err < 1e-6, f"S error {max_s_err:.2e} exceeds 1e-6"

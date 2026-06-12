@@ -4,16 +4,14 @@ test_controller.py
 Pure-Python unit tests for plan_schedule / make_plan.
 No anki or aqt import required.
 """
+
 from __future__ import annotations
 
 import pytest
-
 from time_budget.scheduler import (
-    GOOD,
     CostModel,
     Forecaster,
     FsrsKernel,
-    Plan,
     Seed,
     make_plan,
     plan_schedule,

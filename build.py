@@ -15,8 +15,8 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).parent
-SRC  = ROOT / "time_budget"
-OUT  = ROOT / "time_budget.ankiaddon"
+SRC = ROOT / "time_budget"
+OUT = ROOT / "time_budget.ankiaddon"
 
 INCLUDE = {".py", ".json", ".md"}
 EXCLUDE_DIRS = {"__pycache__"}

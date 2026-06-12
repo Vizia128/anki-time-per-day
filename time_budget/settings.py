@@ -14,7 +14,6 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass
-from typing import Optional
 
 from .constants import DEFAULT_BUDGET_MINUTES, DEFAULT_HORIZON_DAYS
 
@@ -24,10 +23,11 @@ MINUTES_PER_DAY = 24.0 * 60.0
 @dataclass
 class DeckSettings:
     """One config entry's settings, coerced to safe types and ranges."""
+
     budget_minutes: float = DEFAULT_BUDGET_MINUTES
     horizon_days: int = DEFAULT_HORIZON_DAYS
-    daily_new_cap: int = 0          # 0 = no cap
-    desired_retention_override: Optional[float] = None
+    daily_new_cap: int = 0  # 0 = no cap
+    desired_retention_override: float | None = None
     active: bool = False
 
 
@@ -60,7 +60,9 @@ def parse_deck_settings(entry: dict) -> DeckSettings:
     return DeckSettings(
         budget_minutes=_coerce_float(
             entry.get("budgetMinutes"),
-            DEFAULT_BUDGET_MINUTES, 0.5, MINUTES_PER_DAY,
+            DEFAULT_BUDGET_MINUTES,
+            0.5,
+            MINUTES_PER_DAY,
         ),
         horizon_days=_coerce_int(
             entry.get("horizonDays"), DEFAULT_HORIZON_DAYS, 1, 3650
@@ -92,9 +94,8 @@ def match_deck_entry(config: dict, deck_name: str) -> dict | None:
                     return entry
             except re.error:
                 continue
-        elif isinstance(pattern, list):
-            if deck_name in pattern:
-                return entry
+        elif isinstance(pattern, list) and deck_name in pattern:
+            return entry
     return None
 
 

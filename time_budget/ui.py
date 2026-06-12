@@ -124,8 +124,7 @@ class TimeBudgetDialog(QDialog):
         self.finish_spinbox.setRange(1, 9999)
         self.finish_spinbox.setSuffix(" days")
         self.finish_spinbox.setToolTip(
-            "Target days to finish the deck. "
-            "Edit to compute the required daily budget."
+            "Target days to finish the deck. Edit to compute the required daily budget."
         )
 
         link_label = QLabel("Edit either field — the other updates automatically")
@@ -184,8 +183,7 @@ class TimeBudgetDialog(QDialog):
         )
         self.studied_label = self._make_readonly_label()
         self.studied_label.setToolTip(
-            "Time logged in your review history for this deck since the "
-            "start of today."
+            "Time logged in your review history for this deck since the start of today."
         )
         self.peak_label = self._make_readonly_label()
         self.peak_label.setToolTip(
@@ -262,16 +260,13 @@ class TimeBudgetDialog(QDialog):
         )
         heading = QLabel(title)
         heading.setStyleSheet(
-            "font-size: 15px; font-weight: bold; background: transparent;"
-            " border: none;"
+            "font-size: 15px; font-weight: bold; background: transparent; border: none;"
         )
         form = QFormLayout()
         form.setContentsMargins(0, 10, 0, 0)
         form.setSpacing(10)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
-        form.setFieldGrowthPolicy(
-            QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow
-        )
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
         outer = QVBoxLayout(card)
         outer.setContentsMargins(16, 14, 16, 16)
         outer.setSpacing(0)
@@ -283,9 +278,7 @@ class TimeBudgetDialog(QDialog):
     def _make_readonly_label() -> QLabel:
         label = QLabel("—")
         label.setStyleSheet("background: transparent;")
-        label.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
-        )
+        label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         return label
 
     def _connect_signals(self) -> None:
@@ -549,9 +542,7 @@ class TimeBudgetDialog(QDialog):
                     daily_new_cap=daily_cap if daily_cap > 0 else NO_DAILY_CAP,
                 )
                 today_budget = (
-                    today_override
-                    if today_override is not None
-                    else required_budget
+                    today_override if today_override is not None else required_budget
                 )
                 result = adapter.compute_deck_plan(
                     col,

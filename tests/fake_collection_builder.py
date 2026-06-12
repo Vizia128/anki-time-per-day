@@ -10,6 +10,7 @@ the tempfile.mkdtemp() directory manually).
 
 Nothing here touches a real Anki profile.
 """
+
 from __future__ import annotations
 
 import os
@@ -26,14 +27,16 @@ def build_fake_collection(
     desired_retention: float = 0.9,
     pass_ms: int = 7000,
     lapse_ms: int = 14000,
-    new_step_ms: int = 11000,   # per learning step; 2 steps -> ~22 s/new card
+    new_step_ms: int = 11000,  # per learning step; 2 steps -> ~22 s/new card
     seed: int = 7,
 ):
     """Return (col, did, path). Caller is responsible for col.close()."""
     # Import collection first: it bootstraps anki.cards fully via the hook chain,
     # preventing "Card from partially initialized module anki.cards" circular import.
-    from anki.collection import Collection  # noqa: F401 (side-effect: resolves cycle)
+    # isort: off
+    from anki.collection import Collection
     from anki.cards import FSRSMemoryState
+    # isort: on
 
     rng = random.Random(seed)
     path = os.path.join(tempfile.mkdtemp(prefix="tbsched_"), "fake.anki2")
@@ -151,9 +154,7 @@ def build_fake_collection_with_overdue(n_review: int = 30, n_new: int = 50):
     """
     col, did, path = build_fake_collection(n_review=n_review, n_new=n_new)
     today = col.sched.today
-    cids = col.db.list(
-        f"SELECT id FROM cards WHERE did={did} AND type=2 LIMIT 10"
-    )
+    cids = col.db.list(f"SELECT id FROM cards WHERE did={did} AND type=2 LIMIT 10")
     for cid in cids:
         card = col.get_card(cid)
         card.due = today - 10
@@ -170,8 +171,11 @@ def build_fake_collection_with_subdecks(
 
     Returns (col, parent_did, child_did, path).
     """
+    # Collection must be imported before anki.cards (circular import).
+    # isort: off
     from anki.collection import Collection
     from anki.cards import FSRSMemoryState
+    # isort: on
 
     path = os.path.join(tempfile.mkdtemp(prefix="tbsched_sub_"), "fake.anki2")
     col = Collection(path)

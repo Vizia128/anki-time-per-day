@@ -16,8 +16,7 @@ from __future__ import annotations
 
 import re
 import statistics
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass
 
 from .scheduler import (
     GOOD,
@@ -44,6 +43,7 @@ def _get_col(col=None):
     if col is not None:
         return col
     import aqt
+
     return aqt.mw.col
 
 
@@ -61,11 +61,11 @@ class DeckResult:
     peak_minutes: float
     base_peak_minutes: float
     cost: CostModel
-    plan: Optional[Plan]
+    plan: Plan | None
     fsrs_disabled: bool = False
-    error: Optional[str] = None
-    studied_minutes: float = 0.0   # minutes already studied today (from revlog)
-    horizon_days: int = 0          # planning horizon the forecast used
+    error: str | None = None
+    studied_minutes: float = 0.0  # minutes already studied today (from revlog)
+    horizon_days: int = 0  # planning horizon the forecast used
 
 
 def fsrs_disabled_result(deck_name: str, deck_id: int) -> DeckResult:
@@ -108,6 +108,7 @@ def error_result(deck_name: str, deck_id: int, message: str) -> DeckResult:
 def subdeck_ids_csv(col, deck_id: int) -> str:
     """Parenthesised CSV of the deck's id plus all child deck ids, for SQL IN."""
     from anki.utils import ids2str
+
     return ids2str(col.decks.deck_and_child_ids(deck_id))
 
 
@@ -120,6 +121,7 @@ def read_fsrs_params(col, deck_id: int):
     yet, we return the FSRS-6 defaults so planning still works.
     """
     from .scheduler import FSRS6_DEFAULT_PARAMS
+
     preset = col.decks.config_dict_for_deck_id(deck_id)
     desired_retention = preset.get("desiredRetention", 0.9)
 
@@ -165,9 +167,7 @@ def read_cost_model(col, deck_id: int) -> CostModel:
         f"AND time > 0 AND time < 120000 GROUP BY cid"
     )
     sec_new = (
-        float(statistics.median(per_new_card_totals))
-        if per_new_card_totals
-        else 20.0
+        float(statistics.median(per_new_card_totals)) if per_new_card_totals else 20.0
     )
     return CostModel(sec_new=sec_new, sec_pass=sec_pass, sec_lapse=sec_lapse)
 
@@ -230,11 +230,12 @@ class DeckInputs:
     kernel is None when the deck's preset has no FSRS parameters; in that
     case the remaining fields hold cheap placeholder values.
     """
+
     deck_name: str
     deck_id: int
     desired_retention: float
-    params: Optional[list[float]]
-    kernel: Optional[FsrsKernel]
+    params: list[float] | None
+    kernel: FsrsKernel | None
     cost: CostModel
     existing: list[Seed]
     total_new_cards: int

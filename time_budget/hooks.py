@@ -39,9 +39,7 @@ def apply_all_active_decks(col, *, force: bool = False) -> list[DeckResult]:
             continue
         deck_id = int(deck.id)
         try:
-            override = settings.today_override_minutes(
-                config, deck.name, day_cutoff
-            )
+            override = settings.today_override_minutes(config, deck.name, day_cutoff)
             today_budget = (
                 override if override is not None else deck_settings.budget_minutes
             )
@@ -51,9 +49,7 @@ def apply_all_active_decks(col, *, force: bool = False) -> list[DeckResult]:
                 budget_minutes=deck_settings.budget_minutes,
                 today_budget_minutes=today_budget,
                 daily_new_cap=deck_settings.daily_new_cap,
-                desired_retention_override=(
-                    deck_settings.desired_retention_override
-                ),
+                desired_retention_override=(deck_settings.desired_retention_override),
                 write_limit=True,
             )
         except Exception as exc:
@@ -70,9 +66,7 @@ def _report_results(results: list[DeckResult]) -> None:
         if result.error:
             problems.append(f"{result.deck_name}: error — {result.error}")
         elif result.fsrs_disabled:
-            problems.append(
-                f"{result.deck_name}: FSRS not enabled, skipped."
-            )
+            problems.append(f"{result.deck_name}: FSRS not enabled, skipped.")
         elif not result.feasible:
             problems.append(
                 f"{result.deck_name}: {result.cards_unscheduled} new cards "

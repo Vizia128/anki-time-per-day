@@ -46,9 +46,27 @@ from dataclasses import dataclass, field
 # FSRS-6 default parameters (21), as shipped by py-fsrs / Anki. The live add-on
 # should overwrite these with the user's optimized per-preset parameters.
 FSRS6_DEFAULT_PARAMS = [
-    0.212, 1.2931, 2.3065, 8.2956, 6.4133, 0.8334, 3.0194, 0.001,
-    1.8722, 0.1666, 0.796, 1.4835, 0.0614, 0.2629, 1.6483, 0.6014,
-    1.8729, 0.5425, 0.0912, 0.0658, 0.1542,
+    0.212,
+    1.2931,
+    2.3065,
+    8.2956,
+    6.4133,
+    0.8334,
+    3.0194,
+    0.001,
+    1.8722,
+    0.1666,
+    0.796,
+    1.4835,
+    0.0614,
+    0.2629,
+    1.6483,
+    0.6014,
+    1.8729,
+    0.5425,
+    0.0912,
+    0.0658,
+    0.1542,
 ]
 
 STABILITY_MIN = 0.001
@@ -72,7 +90,7 @@ class FsrsKernel:
     def __init__(self, params=None, desired_retention: float = 0.9):
         self.w = list(params) if params is not None else list(FSRS6_DEFAULT_PARAMS)
         self.desired_retention = desired_retention
-        self.decay = -self.w[20]                      # signed decay (negative)
+        self.decay = -self.w[20]  # signed decay (negative)
         self.factor = 0.9 ** (1.0 / self.decay) - 1.0
 
     # retrievability after `t` days since last review
@@ -107,7 +125,9 @@ class FsrsKernel:
         nd = self.w[7] * arg1 + (1.0 - self.w[7]) * arg2
         return self._clamp_d(nd)
 
-    def stability_after_recall(self, d: float, s: float, r: float, rating: int) -> float:
+    def stability_after_recall(
+        self, d: float, s: float, r: float, rating: int
+    ) -> float:
         hard = self.w[15] if rating == HARD else 1.0
         easy = self.w[16] if rating == EASY else 1.0
         inc = (
@@ -152,18 +172,20 @@ class FsrsKernel:
 class CostModel:
     """Per-event study seconds. In the live add-on these come from revlog medians
     (the `time` column, in ms). Can later be made state-dependent."""
-    sec_new: float = 18.0      # introducing+learning a new card (sum of same-day steps)
-    sec_pass: float = 6.0      # a successful review
-    sec_lapse: float = 12.0    # a failed review (longer: you re-study it)
+
+    sec_new: float = 18.0  # introducing+learning a new card (sum of same-day steps)
+    sec_pass: float = 6.0  # a successful review
+    sec_lapse: float = 12.0  # a failed review (longer: you re-study it)
 
 
 @dataclass
 class Seed:
     """A (fractional) population of cards sharing a memory state and due day."""
+
     mass: float
     s: float
     d: float
-    due: int                   # whole days from "today" (<=0 means due now)
+    due: int  # whole days from "today" (<=0 means due now)
 
 
 class Forecaster:
@@ -205,8 +227,7 @@ class Forecaster:
 
         retention = self.kernel.desired_retention
         per_review = (
-            retention * self.cost.sec_pass
-            + (1.0 - retention) * self.cost.sec_lapse
+            retention * self.cost.sec_pass + (1.0 - retention) * self.cost.sec_lapse
         )
         seconds_per_day = [0.0] * (horizon + 1)
         reviews_per_day = [0.0] * (horizon + 1)
@@ -215,7 +236,7 @@ class Forecaster:
             day_bucket = buckets.get(day)
             if not day_bucket:
                 continue
-            for (mass, s_weighted, d_weighted) in list(day_bucket.values()):
+            for mass, s_weighted, d_weighted in list(day_bucket.values()):
                 if mass <= 1e-12:
                     continue
                 s = s_weighted / mass
@@ -230,7 +251,9 @@ class Forecaster:
                 recall_d = self.kernel.next_difficulty(d, GOOD)
                 add(
                     day + self.kernel.next_interval(recall_s),
-                    recall_mass, recall_s, recall_d,
+                    recall_mass,
+                    recall_s,
+                    recall_d,
                 )
 
                 # forget branch -> relearn, due next day
@@ -262,11 +285,11 @@ class Forecaster:
 # ---------------------------------------------------------------------------
 @dataclass
 class Plan:
-    schedule: list[int]            # new cards to introduce on each day
-    predicted_seconds: list[float] # forecast study seconds per day under the plan
-    base_seconds: list[float]      # baseline from existing cards (for reference)
-    completion_day: int            # last day new cards are introduced (-1 if none)
-    cards_unscheduled: int         # new cards that didn't fit within the horizon
+    schedule: list[int]  # new cards to introduce on each day
+    predicted_seconds: list[float]  # forecast study seconds per day under the plan
+    base_seconds: list[float]  # baseline from existing cards (for reference)
+    completion_day: int  # last day new cards are introduced (-1 if none)
+    cards_unscheduled: int  # new cards that didn't fit within the horizon
     budget_seconds: float
     feasible: bool = field(init=False)
 
@@ -295,7 +318,7 @@ def plan_schedule(
     Because tail is front-loaded and decaying, the binding constraint is either
     today or a near-future peak; we solve it in closed form per day.
     """
-    committed = [0.0] * (horizon + 1)   # load from already-scheduled new cards
+    committed = [0.0] * (horizon + 1)  # load from already-scheduled new cards
     schedule = [0] * (horizon + 1)
     remaining = total_new_cards
     tail_length = len(tail)
@@ -313,10 +336,7 @@ def plan_schedule(
                 continue
             headroom = budget_seconds - base[future_day] - committed[future_day]
             max_new = min(max_new, headroom / tail_load)
-        if max_new == float("inf"):
-            new_today = 0
-        else:
-            new_today = int(math.floor(max_new + 1e-9))
+        new_today = 0 if max_new == float("inf") else int(math.floor(max_new + 1e-09))
         new_today = max(0, min(new_today, remaining, daily_new_cap))
         if new_today > 0:
             schedule[day] = new_today
