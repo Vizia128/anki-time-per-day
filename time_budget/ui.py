@@ -9,11 +9,14 @@ Layout:
       – Daily budget  ↔  Finish in   (bidirectional: edit either one)
       – Today's budget override
       – Daily cap
-      – Active (auto-apply on profile open / after sync)
+      – Apply automatically (auto-apply on profile open / after sync)
   • Forecast card: live, debounced re-plan as settings change
-  • Save (saves config and applies today's limit) | Cancel
+  • Save | Cancel
 
-Closing the dialog re-applies the last-saved settings for the selected deck.
+Strict save model: nothing is written until Save. Save persists the deck's
+settings (including today's override) and applies today's new-card limit;
+the dialog stays open. Cancel or closing the window discards unsaved changes
+and writes nothing — the forecast is always a preview.
 Only one dialog instance is shown at a time (see show_dialog).
 """
 
@@ -50,8 +53,6 @@ from .scheduler import NO_DAILY_CAP, find_budget_for_target
 
 # Forecasts re-run this long after the last keystroke/spin.
 FORECAST_DEBOUNCE_MS = 400
-# Today's override writes the limit this long after the last change.
-APPLY_TODAY_DEBOUNCE_MS = 600
 
 
 class TimeBudgetDialog(QDialog):
@@ -117,7 +118,7 @@ class TimeBudgetDialog(QDialog):
             "Edit to compute the required daily budget."
         )
 
-        link_label = QLabel("↑ edit either one; the other updates automatically")
+        link_label = QLabel("Edit either field — the other updates automatically")
         link_label.setStyleSheet(
             "color: gray; font-size: 10px; background: transparent;"
         )
@@ -130,7 +131,7 @@ class TimeBudgetDialog(QDialog):
         self.today_spinbox.setSuffix(" min")
         self.today_spinbox.setEnabled(False)
         self.today_spinbox.setToolTip(
-            "One-off budget for today only. "
+            "One-off budget for today only; takes effect when you press Save. "
             "The long-term daily budget is unchanged."
         )
 
@@ -150,10 +151,11 @@ class TimeBudgetDialog(QDialog):
             "0 = no ceiling."
         )
 
-        self.active_checkbox = QCheckBox()
+        self.active_checkbox = QCheckBox("When Anki starts and after sync")
         self.active_checkbox.setToolTip(
-            "Write the new-card limit automatically when Anki opens or after "
-            "sync. Saving or closing this dialog always applies the limit."
+            "Also write the new-card limit automatically on startup and after "
+            "each sync, using the saved settings. Pressing Save always applies "
+            "it immediately."
         )
 
         settings_card, settings_form, _ = self._make_section_card("Settings")
@@ -162,14 +164,34 @@ class TimeBudgetDialog(QDialog):
         settings_form.addRow("", link_label)
         settings_form.addRow("Today's budget:", today_widget)
         settings_form.addRow("Daily cap:", self.cap_spinbox)
-        settings_form.addRow("Active:", self.active_checkbox)
+        settings_form.addRow("Apply automatically:", self.active_checkbox)
 
         # ── Forecast card ─────────────────────────────────────────────
         self.limit_label = self._make_readonly_label()
+        self.limit_label.setToolTip(
+            "How many new cards the add-on will allow today, after "
+            "subtracting time you have already studied."
+        )
         self.studied_label = self._make_readonly_label()
+        self.studied_label.setToolTip(
+            "Time logged in your review history for this deck since the "
+            "start of today."
+        )
         self.peak_label = self._make_readonly_label()
+        self.peak_label.setToolTip(
+            "Highest predicted study time on any single day under this plan. "
+            "It should stay at or below your daily budget."
+        )
         self.base_load_label = self._make_readonly_label()
+        self.base_load_label.setToolTip(
+            "Highest predicted daily study time from the cards already in "
+            "this deck, before introducing any new cards."
+        )
         self.cost_label = self._make_readonly_label()
+        self.cost_label.setToolTip(
+            "Your median time per new card, successful review, and failed "
+            "review — measured from this deck's review history."
+        )
         self.warning_label = QLabel("")
         self.warning_label.setWordWrap(True)
         self.warning_label.setStyleSheet(
@@ -180,21 +202,20 @@ class TimeBudgetDialog(QDialog):
             "Forecast"
         )
         forecast_form.addRow("Today's new-card limit:", self.limit_label)
-        forecast_form.addRow(
-            "Already studied today (this deck):", self.studied_label
-        )
-        forecast_form.addRow("Peak load:", self.peak_label)
-        forecast_form.addRow("Base load (existing):", self.base_load_label)
-        forecast_form.addRow("Cost model:", self.cost_label)
+        forecast_form.addRow("Studied today (this deck):", self.studied_label)
+        forecast_form.addRow("Busiest day:", self.peak_label)
+        forecast_form.addRow("Busiest day (existing cards):", self.base_load_label)
+        forecast_form.addRow("Your speed:", self.cost_label)
         forecast_outer.addWidget(self.warning_label)
 
         # ── Bottom row ────────────────────────────────────────────────
         self.save_button = QPushButton("Save")
         self.save_button.setDefault(True)
         self.save_button.setToolTip(
-            "Save settings and apply today's new-card limit"
+            "Save these settings and set today's new-card limit"
         )
         self.cancel_button = QPushButton("Cancel")
+        self.cancel_button.setToolTip("Close without saving or changing anything")
 
         bottom_row = QHBoxLayout()
         bottom_row.addStretch()
@@ -219,10 +240,6 @@ class TimeBudgetDialog(QDialog):
         self._reverse_forecast_timer = QTimer(self)
         self._reverse_forecast_timer.setSingleShot(True)
         self._reverse_forecast_timer.setInterval(FORECAST_DEBOUNCE_MS)
-
-        self._apply_today_timer = QTimer(self)
-        self._apply_today_timer.setSingleShot(True)
-        self._apply_today_timer.setInterval(APPLY_TODAY_DEBOUNCE_MS)
 
     @staticmethod
     def _make_section_card(title: str):
@@ -273,7 +290,6 @@ class TimeBudgetDialog(QDialog):
         qconnect(self.cancel_button.clicked, self._on_cancel_clicked)
         qconnect(self._forward_forecast_timer.timeout, self._run_forward_forecast)
         qconnect(self._reverse_forecast_timer.timeout, self._run_reverse_forecast)
-        qconnect(self._apply_today_timer.timeout, self._apply_today_override)
 
     # ------------------------------------------------------------------
     # Small helpers
@@ -315,6 +331,8 @@ class TimeBudgetDialog(QDialog):
         }
 
     def _save_config(self) -> None:
+        """Persist the current widgets — deck settings and today's override —
+        to the add-on config in a single write."""
         deck_name = self._current_deck_name()
         new_entry = self._build_config_entry(deck_name)
         other_entries = [
@@ -329,6 +347,14 @@ class TimeBudgetDialog(QDialog):
             )
         ]
         self._config["decks"] = [new_entry] + other_entries
+        overrides = self._config.setdefault("todayOverrides", {})
+        if self.today_same_checkbox.isChecked():
+            overrides.pop(deck_name, None)
+        else:
+            overrides[deck_name] = {
+                "budgetMinutes": float(self.today_spinbox.value()),
+                "dayCutoff": self._today_day_cutoff(),
+            }
         aqt.mw.addonManager.writeConfig(ADDON_PACKAGE, self._config)
         self._dirty = False
 
@@ -338,18 +364,6 @@ class TimeBudgetDialog(QDialog):
         if entry and entry.get("dayCutoff") == self._today_day_cutoff():
             return float(entry["budgetMinutes"])
         return None
-
-    def _persist_today_override(self, deck_name: str, budget_minutes) -> None:
-        """Save or clear today's override. Does not touch deck settings."""
-        overrides = self._config.setdefault("todayOverrides", {})
-        if budget_minutes is None:
-            overrides.pop(deck_name, None)
-        else:
-            overrides[deck_name] = {
-                "budgetMinutes": float(budget_minutes),
-                "dayCutoff": self._today_day_cutoff(),
-            }
-        aqt.mw.addonManager.writeConfig(ADDON_PACKAGE, self._config)
 
     def _load_deck(self, deck_name: str) -> None:
         """Populate widgets from saved config (no signals, resets dirty)."""
@@ -402,7 +416,10 @@ class TimeBudgetDialog(QDialog):
         if result.fsrs_disabled:
             for label in self._forecast_labels():
                 label.setText("—")
-            self.warning_label.setText("⚠  FSRS not enabled for this deck.")
+            self.warning_label.setText(
+                "⚠  This deck doesn't use FSRS. Enable FSRS in the deck's "
+                "options (Deck Options → FSRS), then reopen this dialog."
+            )
             return
         if result.error:
             for label in self._forecast_labels():
@@ -424,15 +441,15 @@ class TimeBudgetDialog(QDialog):
         self.peak_label.setText(f"{result.peak_minutes:.1f} min/day")
         self.base_load_label.setText(f"{result.base_peak_minutes:.1f} min/day")
         self.cost_label.setText(
-            f"new={result.cost.sec_new:.0f}s  "
-            f"pass={result.cost.sec_pass:.0f}s  "
-            f"lapse={result.cost.sec_lapse:.0f}s"
+            f"{result.cost.sec_new:.0f}s per new card · "
+            f"{result.cost.sec_pass:.0f}s per review · "
+            f"{result.cost.sec_lapse:.0f}s per failed review"
         )
         if not result.feasible:
             self.warning_label.setText(
-                f"⚠  INFEASIBLE — {result.cards_unscheduled} new cards won't "
-                f"fit in {result.horizon_days} days at this budget. "
-                f"Raise the budget or extend the horizon."
+                f"⚠  Not all cards fit: {result.cards_unscheduled} new cards "
+                f"don't fit within {result.horizon_days} days at this budget. "
+                f"Increase the daily budget or the 'Finish in' days."
             )
         else:
             self.warning_label.setText("")
@@ -535,31 +552,6 @@ class TimeBudgetDialog(QDialog):
 
         QueryOp(parent=self, op=compute, success=done).run_in_background()
 
-    def _apply_today_override(self) -> None:
-        """Write today's new-card limit right after the override changes."""
-        deck_id = self._current_deck_id()
-        if deck_id is None:
-            return
-        budget = float(self.budget_spinbox.value())
-        daily_cap = int(self.cap_spinbox.value())
-        today_budget = (
-            budget
-            if self.today_same_checkbox.isChecked()
-            else float(self.today_spinbox.value())
-        )
-
-        def apply(col) -> None:
-            adapter.compute_deck_plan(
-                col,
-                deck_id,
-                budget_minutes=budget,
-                today_budget_minutes=today_budget,
-                daily_new_cap=daily_cap,
-                write_limit=True,
-            )
-
-        QueryOp(parent=self, op=apply, success=lambda _: None).run_in_background()
-
     # ------------------------------------------------------------------
     # Signal handlers
     # ------------------------------------------------------------------
@@ -588,27 +580,18 @@ class TimeBudgetDialog(QDialog):
     def _on_today_same_toggled(self, _state) -> None:
         if self._updating:
             return
+        self._dirty = True
         checked = self.today_same_checkbox.isChecked()
         self.today_spinbox.setEnabled(not checked)
         if not checked:
             with self._signals_blocked(self.today_spinbox):
                 self.today_spinbox.setValue(self.budget_spinbox.value())
-        deck_name = self._current_deck_name()
-        if checked:
-            self._persist_today_override(deck_name, None)
-        else:
-            self._persist_today_override(deck_name, self.today_spinbox.value())
-        self._apply_today_timer.start()
         self._forward_forecast_timer.start()
 
     def _on_today_spinbox_changed(self, _value) -> None:
         if self._updating:
             return
-        if not self.today_same_checkbox.isChecked():
-            self._persist_today_override(
-                self._current_deck_name(), self.today_spinbox.value()
-            )
-            self._apply_today_timer.start()
+        self._dirty = True
         self._forward_forecast_timer.start()
 
     def _on_deck_changed(self, _index: int) -> None:
@@ -639,7 +622,11 @@ class TimeBudgetDialog(QDialog):
     # Save / close
     # ------------------------------------------------------------------
     def _ask_unsaved(self, on_proceed, on_cancel=None) -> None:
-        """Anki-style 'Save changes?' prompt."""
+        """Anki-style 'Save changes?' prompt.
+
+        Save: persist + apply, then proceed. Discard: proceed without
+        writing anything. Escape/[x]: abort the operation.
+        """
         answer = QMessageBox.question(
             self,
             "Time Budget",
@@ -648,7 +635,7 @@ class TimeBudgetDialog(QDialog):
             QMessageBox.StandardButton.Save,
         )
         if answer == QMessageBox.StandardButton.Save:
-            self._save_config()
+            self._save_and_apply()
             on_proceed()
         elif answer == QMessageBox.StandardButton.Discard:
             on_proceed()
@@ -656,62 +643,10 @@ class TimeBudgetDialog(QDialog):
             if on_cancel:
                 on_cancel()
 
-    def _trigger_auto_apply(self) -> None:
-        """Fire-and-forget limit write using saved config. Parented to the
-        main window so it survives dialog destruction."""
-        deck_name = self._current_deck_name()
-        deck_id = self._deck_ids.get(deck_name)
-        if deck_id is None:
-            return
-        entry = adapter.match_deck_configs(self._config, deck_name) or {}
-        if not entry:
-            return
-        budget = float(entry.get("budgetMinutes", DEFAULT_BUDGET_MINUTES))
-        daily_cap = int(entry.get("dailyNewCap") or 0)
-        override = self._config.get("todayOverrides", {}).get(deck_name)
-        override_budget = float(override["budgetMinutes"]) if override else None
-        override_day_cutoff = override.get("dayCutoff") if override else None
-
-        def apply(col) -> DeckResult:
-            today_budget = (
-                override_budget
-                if override_budget is not None
-                and override_day_cutoff == col.sched.day_cutoff
-                else budget
-            )
-            return adapter.compute_deck_plan(
-                col,
-                deck_id,
-                budget_minutes=budget,
-                today_budget_minutes=today_budget,
-                daily_new_cap=daily_cap,
-                write_limit=True,
-            )
-
-        def done(result: DeckResult) -> None:
-            if not result.error and aqt.mw.state in ("deckBrowser", "overview"):
-                aqt.mw.reset()
-
-        QueryOp(parent=aqt.mw, op=apply, success=done).run_in_background()
-
-    def _close_and_apply(self) -> None:
-        """Close the dialog (bypassing the dirty check) and re-apply the
-        last-saved settings."""
-        self._trigger_auto_apply()
-        self._force_close = True
-        self.close()
-
-    def closeEvent(self, event) -> None:  # noqa: N802 (Qt override)
-        if self._force_close:
-            event.accept()
-            return
-        event.ignore()
-        if self._dirty:
-            self._ask_unsaved(self._close_and_apply)
-        else:
-            self._close_and_apply()
-
-    def _on_save_clicked(self) -> None:
+    def _save_and_apply(self) -> None:
+        """Persist the current widgets to config and write today's new-card
+        limit. The only place (besides the startup/sync hooks) where the
+        add-on writes to the collection."""
         self._save_config()
         deck_name = self._current_deck_name()
         deck_id = self._deck_ids.get(deck_name)
@@ -737,24 +672,38 @@ class TimeBudgetDialog(QDialog):
 
         def done(result: DeckResult) -> None:
             if result.fsrs_disabled:
-                tooltip(f"FSRS not enabled for '{deck_name}'.")
+                tooltip(f"FSRS not enabled for '{deck_name}' — nothing applied.")
             elif result.error:
                 tooltip(f"Error applying limit: {result.error}")
             else:
                 tooltip(
-                    f"Applied: {result.today_new_limit} new cards/day "
+                    f"Saved: up to {result.today_new_limit} new cards today "
                     f"for '{deck_name}'."
                 )
                 if aqt.mw.state in ("deckBrowser", "overview"):
                     aqt.mw.reset()
 
-        QueryOp(parent=self, op=compute, success=done).run_in_background()
+        # Parented to the main window so the write survives the dialog
+        # closing right after Save.
+        QueryOp(parent=aqt.mw, op=compute, success=done).run_in_background()
+
+    def _close_dialog(self) -> None:
+        """Close, bypassing the dirty-check prompt."""
+        self._force_close = True
+        self.close()
+
+    def closeEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        if self._force_close or not self._dirty:
+            event.accept()
+            return
+        event.ignore()
+        self._ask_unsaved(self._close_dialog)
+
+    def _on_save_clicked(self) -> None:
+        self._save_and_apply()
 
     def _on_cancel_clicked(self) -> None:
-        if self._dirty:
-            self._ask_unsaved(self._close_and_apply)
-        else:
-            self._close_and_apply()
+        self.close()  # closeEvent prompts if there are unsaved changes
 
 
 # ---------------------------------------------------------------------------

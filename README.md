@@ -45,14 +45,16 @@ Open **Tools → Time Budget → Open…** to configure a deck.
 |---|---|
 | **Daily budget** | Minutes per day you want to spend studying (new + review). |
 | **Finish in** | Target days to finish all new cards. Edit either field; the other updates automatically via binary search. |
-| **Today's budget** | One-off override for today only. Uncheck "Same as daily budget" to enter a custom value. Does not affect saved settings. |
+| **Today's budget** | One-off override for today only; takes effect when you press Save. The long-term daily budget is unchanged. |
 | **Daily cap** | Hard ceiling on new cards per day regardless of budget headroom. Useful if you want to pace introduction even when you have spare time. |
-| **Active** | When enabled, the add-on automatically sets your new-card limit when Anki opens and after each sync, using the saved daily budget. |
+| **Apply automatically** | When enabled, the add-on also sets your new-card limit when Anki opens and after each sync, using the saved settings. |
 
 ### Buttons
 
-- **Save** — Save settings and immediately set today's new-card limit (uses Today's budget if overridden).
-- **Cancel** — Close the dialog (prompts to save if there are unsaved changes). Closing the dialog applies the last-saved settings.
+- **Save** — Save the settings and set today's new-card limit. The dialog stays open.
+- **Cancel** — Close without saving or changing anything. If you have unsaved changes, you'll be asked whether to save them first.
+
+Nothing is written to your collection until you press Save (or, for decks with "Apply automatically" enabled, until Anki starts or finishes a sync). The forecast panel is always a preview.
 
 ### Forecast panel
 
@@ -87,7 +89,7 @@ Settings are stored in Anki's add-on config system (`config.json` / the Add-ons 
 | `budgetMinutes` | float | `30` | Daily study-time budget in minutes. |
 | `horizonDays` | int | `365` | Planning horizon. The add-on also auto-estimates a minimum horizon based on deck size. |
 | `dailyNewCap` | int or null | `null` | Maximum new cards per day. `null` means no cap. |
-| `active` | bool | `false` | Automatically apply limits when Anki opens and after sync. Saving or closing the dialog always applies regardless of this setting. |
+| `active` | bool | `false` | Automatically apply limits when Anki opens and after sync. Pressing Save in the dialog always applies immediately, regardless of this setting. |
 
 ## Development
 

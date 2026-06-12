@@ -38,7 +38,7 @@ lower retention target without changing the preset.
 ### `active` *(boolean, default false)*
 
 When `false` (the default), the add-on only writes the new-card limit when you
-save or close the Time Budget dialog.
+press **Save** in the Time Budget dialog.
 
 When `true`, the limit is also written automatically when Anki opens and after
 each sync.
