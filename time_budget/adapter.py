@@ -19,7 +19,21 @@ import statistics
 from dataclasses import dataclass, field
 from typing import Optional
 
-from .scheduler import CostModel, FsrsKernel, Plan, Seed, make_plan, GOOD
+from .scheduler import (
+    GOOD,
+    NO_DAILY_CAP,
+    CostModel,
+    FsrsKernel,
+    Plan,
+    Seed,
+    adaptive_horizon,
+    make_plan,
+)
+
+# Floor for "remaining budget today": even when the user has already studied
+# past their budget, the planner still gets a sliver so it returns a valid
+# (usually zero-new-cards) plan instead of degenerating.
+MINIMUM_EFFECTIVE_BUDGET_MINUTES = 0.5
 
 
 # ---------------------------------------------------------------------------
@@ -50,6 +64,42 @@ class DeckResult:
     plan: Optional[Plan]
     fsrs_disabled: bool = False
     error: Optional[str] = None
+    studied_minutes: float = 0.0   # minutes already studied today (from revlog)
+    horizon_days: int = 0          # planning horizon the forecast used
+
+
+def fsrs_disabled_result(deck_name: str, deck_id: int) -> DeckResult:
+    """Placeholder result for a deck whose preset has no FSRS parameters."""
+    return DeckResult(
+        deck_name=deck_name,
+        did=deck_id,
+        today_new_limit=0,
+        completion_day=-1,
+        feasible=False,
+        cards_unscheduled=0,
+        peak_minutes=0.0,
+        base_peak_minutes=0.0,
+        cost=CostModel(),
+        plan=None,
+        fsrs_disabled=True,
+    )
+
+
+def error_result(deck_name: str, deck_id: int, message: str) -> DeckResult:
+    """Placeholder result for a deck whose planning raised an exception."""
+    return DeckResult(
+        deck_name=deck_name,
+        did=deck_id,
+        today_new_limit=0,
+        completion_day=-1,
+        feasible=False,
+        cards_unscheduled=0,
+        peak_minutes=0.0,
+        base_peak_minutes=0.0,
+        cost=CostModel(),
+        plan=None,
+        error=message,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -153,6 +203,67 @@ def count_new_cards(col, did: int) -> int:
     return len(col.find_cards(f"is:new -is:suspended did:{dids}"))
 
 
+def studied_today_minutes(col, deck_id: int) -> float:
+    """Minutes already spent on this deck's cards today (from revlog)."""
+    dids = subdeck_ids_csv(col, deck_id)
+    start_ms = (col.sched.day_cutoff - 86400) * 1000
+    ms = col.db.scalar(
+        f"SELECT COALESCE(SUM(time), 0) FROM revlog "
+        f"WHERE id >= {start_ms} "
+        f"AND cid IN (SELECT id FROM cards WHERE did IN {dids})"
+    )
+    return (ms or 0) / 1000.0 / 60.0
+
+
+# ---------------------------------------------------------------------------
+# Bundled inputs for planning
+# ---------------------------------------------------------------------------
+@dataclass
+class DeckInputs:
+    """Everything the planner needs, read from the collection in one pass.
+
+    kernel is None when the deck's preset has no FSRS parameters; in that
+    case the remaining fields hold cheap placeholder values.
+    """
+    deck_name: str
+    deck_id: int
+    desired_retention: float
+    params: Optional[list[float]]
+    kernel: Optional[FsrsKernel]
+    cost: CostModel
+    existing: list[Seed]
+    total_new_cards: int
+    studied_minutes: float
+
+
+def read_deck_inputs(col, deck_id: int) -> DeckInputs:
+    deck_name = col.decks.get(deck_id)["name"]
+    desired_retention, params = read_fsrs_params(col, deck_id)
+    if params is None:
+        return DeckInputs(
+            deck_name=deck_name,
+            deck_id=deck_id,
+            desired_retention=desired_retention,
+            params=None,
+            kernel=None,
+            cost=CostModel(),
+            existing=[],
+            total_new_cards=0,
+            studied_minutes=0.0,
+        )
+    return DeckInputs(
+        deck_name=deck_name,
+        deck_id=deck_id,
+        desired_retention=desired_retention,
+        params=params,
+        kernel=FsrsKernel(params=params, desired_retention=desired_retention),
+        cost=read_cost_model(col, deck_id),
+        existing=read_existing_cards(col, deck_id),
+        total_new_cards=count_new_cards(col, deck_id),
+        studied_minutes=studied_today_minutes(col, deck_id),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Writing the limit (same mechanism as Limit-New-by-Young)
 # ---------------------------------------------------------------------------
@@ -186,74 +297,134 @@ def match_deck_configs(config: dict, deck_name: str) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
-# Main entry point
+# Main entry points
 # ---------------------------------------------------------------------------
+def compute_deck_plan(
+    col,
+    deck_id: int,
+    *,
+    budget_minutes: float,
+    today_budget_minutes: float | None = None,
+    daily_new_cap: int | None = None,
+    horizon: int | None = None,
+    write_limit: bool = False,
+    inputs: DeckInputs | None = None,
+) -> DeckResult:
+    """The single planning pipeline behind every UI action and hook.
+
+    Builds two plans: one at the long-term daily budget (providing the
+    completion/feasibility/peak statistics) and one at today's remaining
+    budget (providing today's new-card limit). Optionally writes the limit
+    to the collection.
+
+    today_budget_minutes: one-off budget for today (None = same as
+        budget_minutes). Time already studied today is subtracted before
+        planning today's limit.
+    daily_new_cap: hard ceiling on new cards/day (None or <= 0 = no cap).
+    horizon: planning window in days (None = adaptive estimate).
+    inputs: pre-read collection data, to avoid a second read when the
+        caller already has it.
+    """
+    if inputs is None:
+        inputs = read_deck_inputs(col, deck_id)
+    if inputs.kernel is None:
+        return fsrs_disabled_result(inputs.deck_name, deck_id)
+
+    cap = daily_new_cap if daily_new_cap and daily_new_cap > 0 else NO_DAILY_CAP
+    if horizon is None:
+        horizon = adaptive_horizon(
+            inputs.existing,
+            inputs.total_new_cards,
+            budget_minutes,
+            inputs.kernel,
+            inputs.cost,
+        )
+    if today_budget_minutes is None:
+        today_budget_minutes = budget_minutes
+
+    full_plan = make_plan(
+        existing=inputs.existing,
+        total_new_cards=inputs.total_new_cards,
+        budget_minutes=budget_minutes,
+        kernel=inputs.kernel,
+        cost=inputs.cost,
+        horizon=horizon,
+        daily_new_cap=cap,
+        first_rating=GOOD,
+    )
+
+    effective_today = max(
+        MINIMUM_EFFECTIVE_BUDGET_MINUTES,
+        today_budget_minutes - inputs.studied_minutes,
+    )
+    if abs(effective_today - budget_minutes) < 1e-9:
+        today_plan = full_plan
+    else:
+        today_plan = make_plan(
+            existing=inputs.existing,
+            total_new_cards=inputs.total_new_cards,
+            budget_minutes=effective_today,
+            kernel=inputs.kernel,
+            cost=inputs.cost,
+            horizon=horizon,
+            daily_new_cap=cap,
+            first_rating=GOOD,
+        )
+
+    today_limit = today_plan.today()
+    if write_limit:
+        set_today_new_limit(col, deck_id, today_limit)
+
+    base_peak = max(full_plan.base_seconds) / 60.0 if full_plan.base_seconds else 0.0
+
+    return DeckResult(
+        deck_name=inputs.deck_name,
+        did=deck_id,
+        today_new_limit=today_limit,
+        completion_day=full_plan.completion_day,
+        feasible=full_plan.feasible,
+        cards_unscheduled=full_plan.cards_unscheduled,
+        peak_minutes=full_plan.peak_minutes(),
+        base_peak_minutes=base_peak,
+        cost=inputs.cost,
+        plan=today_plan,
+        studied_minutes=inputs.studied_minutes,
+        horizon_days=horizon,
+    )
+
+
 def update_deck(
     did: int,
     budget_minutes: float,
     horizon: int = 365,
-    daily_new_cap: int = 9999,
+    daily_new_cap: int = NO_DAILY_CAP,
     desired_retention_override: float | None = None,
     dry_run: bool = False,
     col=None,
 ) -> DeckResult:
     """Compute (and optionally write) today's new-card limit for one deck.
 
+    Unlike compute_deck_plan, this plans at the full given budget without
+    subtracting time already studied today — the stable, scriptable API.
+
     dry_run=True: reads everything, computes the plan, but skips the write.
     col=None: falls back to aqt.mw.col (for use from hooks/menu actions).
     """
     col = _get_col(col)
-    deck_name = col.decks.get(did)["name"]
-    dr, params = read_fsrs_params(col, did)
-
-    if params is None:
-        return DeckResult(
-            deck_name=deck_name,
-            did=did,
-            today_new_limit=0,
-            completion_day=-1,
-            feasible=False,
-            cards_unscheduled=0,
-            peak_minutes=0.0,
-            base_peak_minutes=0.0,
-            cost=CostModel(),
-            plan=None,
-            fsrs_disabled=True,
-        )
-
+    inputs = read_deck_inputs(col, did)
+    if inputs.kernel is None:
+        return fsrs_disabled_result(inputs.deck_name, did)
     if desired_retention_override is not None:
-        dr = desired_retention_override
-
-    kernel = FsrsKernel(params=params, desired_retention=dr)
-    cost = read_cost_model(col, did)
-    existing = read_existing_cards(col, did)
-    total_new = count_new_cards(col, did)
-
-    plan = make_plan(
-        existing=existing,
-        total_new_cards=total_new,
+        inputs.kernel = FsrsKernel(
+            params=inputs.params, desired_retention=desired_retention_override
+        )
+    inputs.studied_minutes = 0.0
+    return compute_deck_plan(
+        col,
+        did,
         budget_minutes=budget_minutes,
-        kernel=kernel,
-        cost=cost,
-        horizon=horizon,
         daily_new_cap=daily_new_cap,
-        first_rating=GOOD,
-    )
-
-    if not dry_run:
-        set_today_new_limit(col, did, plan.today())
-
-    base_peak = max(plan.base_seconds) / 60.0 if plan.base_seconds else 0.0
-
-    return DeckResult(
-        deck_name=deck_name,
-        did=did,
-        today_new_limit=plan.today(),
-        completion_day=plan.completion_day,
-        feasible=plan.feasible,
-        cards_unscheduled=plan.cards_unscheduled,
-        peak_minutes=plan.peak_minutes(),
-        base_peak_minutes=base_peak,
-        cost=cost,
-        plan=plan,
+        horizon=horizon,
+        write_limit=not dry_run,
+        inputs=inputs,
     )

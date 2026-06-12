@@ -49,6 +49,10 @@ STABILITY_MIN = 0.001
 MIN_DIFFICULTY = 1.0
 MAX_DIFFICULTY = 10.0
 
+# Sentinel for "no daily new-card cap". Large enough that the budget, not the
+# cap, is always the binding constraint.
+NO_DAILY_CAP = 9999
+
 # Ratings (match FSRS / Anki button order)
 AGAIN, HARD, GOOD, EASY = 1, 2, 3, 4
 
@@ -267,7 +271,7 @@ def plan_schedule(
     budget_seconds: float,
     total_new_cards: int,
     horizon: int,
-    daily_new_cap: int = 9999,
+    daily_new_cap: int = NO_DAILY_CAP,
 ) -> Plan:
     """Greedy receding-horizon plan.
 
@@ -325,14 +329,14 @@ def make_plan(
     kernel: FsrsKernel,
     cost: CostModel,
     horizon: int = 365,
-    daily_new_cap: int = 9999,
+    daily_new_cap: int = NO_DAILY_CAP,
     first_rating: int = GOOD,
 ) -> Plan:
     """Convenience wrapper: build base + tail, then plan. The live add-on calls
     this once per day and applies `plan.today()` as the new-cards/day limit."""
-    fc = Forecaster(kernel, cost)
-    base = fc.base_load(existing, horizon)
-    tail = fc.new_card_tail(horizon, first_rating=first_rating)
+    forecaster = Forecaster(kernel, cost)
+    base = forecaster.base_load(existing, horizon)
+    tail = forecaster.new_card_tail(horizon, first_rating=first_rating)
     return plan_schedule(
         base=base,
         tail=tail,
@@ -341,3 +345,55 @@ def make_plan(
         horizon=horizon,
         daily_new_cap=daily_new_cap,
     )
+
+
+def adaptive_horizon(
+    existing: list[Seed],
+    total_new_cards: int,
+    budget_minutes: float,
+    kernel: FsrsKernel,
+    cost: CostModel,
+) -> int:
+    """Estimate a planning horizon that comfortably fits the full deck.
+
+    Rough estimate: (new cards / estimated daily throughput) * 3 + 60,
+    clamped to [30, 3650]. The 3x factor absorbs review-tail overhead and
+    base-load underestimation; the +60 adds a minimum buffer.
+    """
+    if total_new_cards == 0:
+        return 30
+    per_review = kernel.dr * cost.sec_pass + (1.0 - kernel.dr) * cost.sec_lapse
+    base_estimate = sum(seed.mass for seed in existing if seed.due == 0) * per_review
+    available_seconds = max(1.0, budget_minutes * 60.0 - base_estimate)
+    daily_new_cards = available_seconds / max(1.0, cost.sec_new)
+    rough_days = total_new_cards / max(0.01, daily_new_cards)
+    return max(30, min(3650, int(rough_days * 3) + 60))
+
+
+def find_budget_for_target(
+    existing: list[Seed],
+    total_new_cards: int,
+    target_days: int,
+    kernel: FsrsKernel,
+    cost: CostModel,
+    daily_new_cap: int = NO_DAILY_CAP,
+) -> float:
+    """Binary search: minimum daily budget (minutes) whose plan finishes all
+    new cards within target_days."""
+    low, high = 0.0, 24.0 * 60.0
+    for _ in range(35):
+        mid = (low + high) / 2.0
+        plan = make_plan(
+            existing=existing,
+            total_new_cards=total_new_cards,
+            budget_minutes=mid,
+            kernel=kernel,
+            cost=cost,
+            horizon=target_days,
+            daily_new_cap=daily_new_cap,
+        )
+        if plan.feasible:
+            high = mid
+        else:
+            low = mid
+    return high

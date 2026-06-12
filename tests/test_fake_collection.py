@@ -235,3 +235,78 @@ def test_dry_run_writes_nothing():
         assert result.error is None
     finally:
         col.close()
+
+
+# ---------------------------------------------------------------------------
+# 10. compute_deck_plan: studied time is detected and subtracted
+# ---------------------------------------------------------------------------
+def test_compute_deck_plan_subtracts_studied_time():
+    col, did, path = build_fake_collection(n_review=250, n_new=1750)
+    try:
+        studied = A.studied_today_minutes(col, did)
+        assert studied > 0, "Fake revlog rows are dated today"
+
+        # Budget already exhausted by today's studying: limit collapses.
+        spent = A.compute_deck_plan(col, did, budget_minutes=30.0)
+        # Same long-term budget, but today's budget leaves 30 min headroom.
+        fresh = A.compute_deck_plan(
+            col, did,
+            budget_minutes=30.0,
+            today_budget_minutes=studied + 30.0,
+        )
+        assert abs(spent.studied_minutes - studied) < 1e-6
+        assert fresh.today_new_limit > spent.today_new_limit
+        # Long-term stats come from the full-budget plan, not today's.
+        assert fresh.completion_day == spent.completion_day
+    finally:
+        col.close()
+
+
+# ---------------------------------------------------------------------------
+# 11. compute_deck_plan: write_limit flag controls the write
+# ---------------------------------------------------------------------------
+def test_compute_deck_plan_write_limit():
+    col, did, path = build_fake_collection(n_review=50, n_new=200)
+    try:
+        before = col.decks.get(did).get("newLimitToday")
+        A.compute_deck_plan(col, did, budget_minutes=60.0)
+        assert col.decks.get(did).get("newLimitToday") == before, (
+            "write_limit=False (default) must not write"
+        )
+
+        result = A.compute_deck_plan(col, did, budget_minutes=60.0, write_limit=True)
+        deck = col.decks.get(did)
+        assert deck["newLimitToday"]["limit"] == result.today_new_limit
+        assert deck["newLimitToday"]["today"] == col.sched.today
+    finally:
+        col.close()
+
+
+# ---------------------------------------------------------------------------
+# 12. compute_deck_plan: FSRS-disabled deck is never written
+# ---------------------------------------------------------------------------
+def test_compute_deck_plan_fsrs_disabled():
+    col, did, path = build_fake_collection_no_fsrs()
+    try:
+        result = A.compute_deck_plan(col, did, budget_minutes=30.0, write_limit=True)
+        assert result.fsrs_disabled is True
+        assert result.plan is None
+        assert col.decks.get(did).get("newLimitToday") is None
+    finally:
+        col.close()
+
+
+# ---------------------------------------------------------------------------
+# 13. compute_deck_plan: daily_new_cap None/0 means uncapped
+# ---------------------------------------------------------------------------
+def test_compute_deck_plan_cap_conventions():
+    col, did, path = build_fake_collection(n_review=0, n_new=500)
+    try:
+        uncapped = A.compute_deck_plan(col, did, budget_minutes=240.0)
+        zero_cap = A.compute_deck_plan(col, did, budget_minutes=240.0, daily_new_cap=0)
+        capped = A.compute_deck_plan(col, did, budget_minutes=240.0, daily_new_cap=3)
+        assert uncapped.today_new_limit == zero_cap.today_new_limit
+        assert capped.today_new_limit <= 3
+        assert uncapped.today_new_limit > capped.today_new_limit
+    finally:
+        col.close()
