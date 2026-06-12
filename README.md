@@ -52,7 +52,7 @@ Open **Tools → Time Budget → Open…** to configure a deck.
 ### Buttons
 
 - **Save** — Save the settings and set today's new-card limit. The dialog stays open.
-- **Cancel** — Close without saving or changing anything. If you have unsaved changes, you'll be asked whether to save them first.
+- **Closing the window** ([x] or Escape) changes nothing. If you have unsaved changes, you'll be asked whether to save them first.
 
 Nothing is written to your collection until you press Save (or, for decks with "Apply automatically" enabled, until Anki starts or finishes a sync). The forecast panel is always a preview.
 

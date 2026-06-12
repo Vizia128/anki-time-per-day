@@ -11,12 +11,12 @@ Layout:
       – Daily cap
       – Apply automatically (auto-apply on profile open / after sync)
   • Forecast card: live, debounced re-plan as settings change
-  • Save | Cancel
+  • Save
 
 Strict save model: nothing is written until Save. Save persists the deck's
 settings (including today's override) and applies today's new-card limit;
-the dialog stays open. Cancel or closing the window discards unsaved changes
-and writes nothing — the forecast is always a preview.
+the dialog stays open. Closing the window ([x] or Escape) discards unsaved
+changes and writes nothing — the forecast is always a preview.
 Only one dialog instance is shown at a time (see show_dialog).
 """
 
@@ -222,13 +222,10 @@ class TimeBudgetDialog(QDialog):
         self.save_button.setToolTip(
             "Save these settings and set today's new-card limit"
         )
-        self.cancel_button = QPushButton("Cancel")
-        self.cancel_button.setToolTip("Close without saving or changing anything")
 
         bottom_row = QHBoxLayout()
         bottom_row.addStretch()
         bottom_row.addWidget(self.save_button)
-        bottom_row.addWidget(self.cancel_button)
 
         # ── Assemble ──────────────────────────────────────────────────
         main_layout = QVBoxLayout()
@@ -290,7 +287,6 @@ class TimeBudgetDialog(QDialog):
         qconnect(self.today_same_checkbox.stateChanged, self._on_today_same_toggled)
         qconnect(self.active_checkbox.stateChanged, self._on_setting_changed)
         qconnect(self.save_button.clicked, self._on_save_clicked)
-        qconnect(self.cancel_button.clicked, self._on_cancel_clicked)
         qconnect(self._forward_forecast_timer.timeout, self._run_forward_forecast)
         qconnect(self._reverse_forecast_timer.timeout, self._run_reverse_forecast)
 
@@ -331,10 +327,17 @@ class TimeBudgetDialog(QDialog):
             "active": self.active_checkbox.isChecked(),
         }
 
-    def _save_config(self) -> None:
+    def _save_config(self, deck_name: str | None = None) -> None:
         """Persist the current widgets — deck settings and today's override —
-        to the add-on config in a single write."""
-        deck_name = self._current_deck_name()
+        to the add-on config in a single write.
+
+        deck_name: which deck the widget values belong to. Defaults to the
+        selected deck, but during a deck switch the dropdown has already
+        moved on while the widgets still hold the departing deck's values,
+        so callers pass the departing deck's name explicitly.
+        """
+        if deck_name is None:
+            deck_name = self._current_deck_name()
         new_entry = self._build_config_entry(deck_name)
         other_entries = [
             entry
@@ -631,18 +634,23 @@ class TimeBudgetDialog(QDialog):
                 self.deck_selector.setCurrentIndex(index)
 
         if self._dirty:
-            self._ask_unsaved(switch, revert)
+            # The dropdown already shows the new deck, but the dirty widget
+            # values belong to the deck we are leaving — save them there.
+            self._ask_unsaved(switch, revert, save_deck_name=self._previous_deck_name)
         else:
             switch()
 
     # ------------------------------------------------------------------
     # Save / close
     # ------------------------------------------------------------------
-    def _ask_unsaved(self, on_proceed, on_cancel=None) -> None:
+    def _ask_unsaved(self, on_proceed, on_cancel=None, save_deck_name=None) -> None:
         """Anki-style 'Save changes?' prompt.
 
         Save: persist + apply, then proceed. Discard: proceed without
         writing anything. Escape/[x]: abort the operation.
+
+        save_deck_name: deck the unsaved widget values belong to (needed
+        during deck switches, where the dropdown already shows the new deck).
         """
         answer = QMessageBox.question(
             self,
@@ -652,7 +660,7 @@ class TimeBudgetDialog(QDialog):
             QMessageBox.StandardButton.Save,
         )
         if answer == QMessageBox.StandardButton.Save:
-            self._save_and_apply()
+            self._save_and_apply(save_deck_name)
             on_proceed()
         elif answer == QMessageBox.StandardButton.Discard:
             on_proceed()
@@ -660,12 +668,16 @@ class TimeBudgetDialog(QDialog):
             if on_cancel:
                 on_cancel()
 
-    def _save_and_apply(self) -> None:
+    def _save_and_apply(self, deck_name: str | None = None) -> None:
         """Persist the current widgets to config and write today's new-card
         limit. The only place (besides the startup/sync hooks) where the
-        add-on writes to the collection."""
-        self._save_config()
-        deck_name = self._current_deck_name()
+        add-on writes to the collection.
+
+        deck_name: which deck the widget values belong to (see _save_config).
+        """
+        if deck_name is None:
+            deck_name = self._current_deck_name()
+        self._save_config(deck_name)
         deck_id = self._deck_ids.get(deck_name)
         if deck_id is None:
             return
@@ -721,11 +733,16 @@ class TimeBudgetDialog(QDialog):
         event.ignore()
         self._ask_unsaved(self._close_dialog)
 
+    def reject(self) -> None:
+        """Escape key. QDialog.reject() bypasses closeEvent, so the dirty
+        check must be repeated here."""
+        if self._force_close or not self._dirty:
+            super().reject()
+            return
+        self._ask_unsaved(self._close_dialog)
+
     def _on_save_clicked(self) -> None:
         self._save_and_apply()
-
-    def _on_cancel_clicked(self) -> None:
-        self.close()  # closeEvent prompts if there are unsaved changes
 
 
 # ---------------------------------------------------------------------------
