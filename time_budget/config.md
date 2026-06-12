@@ -13,6 +13,10 @@ the **first** match wins.
 
 The default `".*"` matches every deck — replace it with a specific pattern.
 
+> **Subdecks:** write rules that match either a parent deck *or* its subdecks,
+> not both. Overlapping rules each compute and write their own limit and will
+> fight over it. One rule for the top-level deck you study from is usually right.
+
 ### `budgetMinutes` *(number, required)*
 
 Daily study-time budget in minutes. The add-on will introduce as many new cards

@@ -2,6 +2,14 @@
 
 An Anki add-on that replaces the fixed "new cards per day" setting with a **daily study-time budget**. You decide how many minutes per day you want to study; the add-on automatically computes how many new cards to introduce so your predicted study time stays within that budget.
 
+## Why
+
+People plan their lives in time, not in cards: "I can study 30 minutes a day" is a real commitment; "20 new cards a day" is not, because the time it costs changes constantly. A fixed new-card rate also compounds — it costs almost nothing in week one, then reviews accumulate until your daily load has doubled or tripled and you either burn out or slam the new-card limit to zero.
+
+This add-on turns the dial around: you fix the time, and the new-card count adapts. It introduces cards as fast as your budget allows while guaranteeing that no current *or future* day is predicted to exceed it, so the pace is sustainable from day one.
+
+The add-on is deliberately conservative about what it touches: it only writes the deck's **today-only new-card limit** (the same field as "New cards today" in deck options). It never reschedules reviews, never edits cards, and never changes your deck presets.
+
 ## How it works
 
 Anki's FSRS scheduler tracks each card's memory state. This add-on uses that data to simulate your future review load and find the new-card introduction rate that keeps your daily study time at or below your budget — without ever overloading a future day.
@@ -21,14 +29,24 @@ This gives you a sustainable pace that uses every minute of your budget without 
 
 ## Installation
 
+### From AnkiWeb (recommended)
+
+Open **Tools → Add-ons → Get Add-ons** and paste the add-on code:
+
+```
+TODO-ANKIWEB-CODE
+```
+
+<!-- Replace TODO-ANKIWEB-CODE with the code AnkiWeb assigns after the first upload. -->
+
 ### From release
 
-Download the latest `time_budget.ankiaddon` from the releases page and double-click to install, or go to **Tools → Add-ons → Install from file**.
+Download the latest `time_budget.ankiaddon` from the [releases page](https://github.com/Vizia128/anki-time-per-day/releases) and double-click to install, or go to **Tools → Add-ons → Install from file**.
 
 ### From source
 
 ```bash
-git clone https://github.com/julianzia/anki-time-per-day
+git clone https://github.com/Vizia128/anki-time-per-day
 cd anki-time-per-day
 python build.py          # produces time_budget.ankiaddon
 ```
@@ -60,10 +78,14 @@ Nothing is written to your collection until you press Save (or, for decks with "
 
 The forecast shows:
 - **Today's new-card limit** — Cards the add-on would allow today.
-- **Already studied today** — Minutes logged in your revlog for this deck today, and how much budget remains.
-- **Peak load** — The busiest day in the long-term plan (should stay near your budget).
-- **Base load** — Predicted load from cards already in your collection (no new cards).
-- **Cost model** — Median time per new card, pass, and lapse derived from your actual review history.
+- **Studied today (this deck)** — Minutes logged in your revlog for this deck today, and how much budget remains.
+- **Busiest day** — The heaviest day in the long-term plan (should stay near your budget).
+- **Busiest day (existing cards)** — Predicted load from cards already in your collection, with no new cards added.
+- **Your speed** — Time per new card, pass, and lapse derived from your actual review history.
+
+### Subdecks
+
+Configure either a parent deck **or** its subdecks, not both. Two rules that match overlapping decks each write their own limit and will fight over it. The simplest setup is one rule for the top-level deck you actually study from.
 
 ## Configuration
 
@@ -145,6 +167,16 @@ tests/
 
 build.py          # Packaging script
 ```
+
+## Bugs and contributions
+
+Please report problems on the [issue tracker](https://github.com/Vizia128/anki-time-per-day/issues). Include:
+
+- your Anki version (Help → About),
+- the deck's rough size (new / learning / review counts),
+- the exact warning or error text if the dialog showed one.
+
+Pull requests are welcome — run `pytest`, `ruff check`, and `ruff format` before submitting (CI enforces all three).
 
 ## License
 
