@@ -97,7 +97,7 @@ def test_fsrs_disabled_deck():
         _, params = A.read_fsrs_params(col, did)
         assert params is None
 
-        result = A.update_deck(did=did, budget_minutes=30.0, col=col, dry_run=True)
+        result = A.update_deck(deck_id=did, budget_minutes=30.0, col=col, dry_run=True)
         assert result.fsrs_disabled is True
         assert result.plan is None
     finally:
@@ -222,7 +222,7 @@ def test_dry_run_writes_nothing():
         deck = col.decks.get(did)
         limit_before = deck.get("newLimitToday")
 
-        result = A.update_deck(did=did, budget_minutes=30.0, col=col, dry_run=True)
+        result = A.update_deck(deck_id=did, budget_minutes=30.0, col=col, dry_run=True)
 
         deck = col.decks.get(did)
         limit_after = deck.get("newLimitToday")

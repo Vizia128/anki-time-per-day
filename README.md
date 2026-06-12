@@ -119,9 +119,12 @@ Produces `time_budget.ankiaddon` in the project root. The script zips the `time_
 
 ```
 time_budget/
-  __init__.py     # UI, hooks, Tools menu
+  __init__.py     # Entry point: Tools menu + hook registration
   scheduler.py    # FSRS-6 kernel + MPC controller (no Anki imports)
-  adapter.py      # Anki collection interface
+  adapter.py      # Anki collection interface + planning pipeline
+  ui.py           # The Time Budget dialog
+  hooks.py        # Auto-apply on profile open / after sync
+  constants.py    # Shared constants
   config.json     # Default config
   manifest.json   # Add-on metadata
 

@@ -53,7 +53,7 @@ def _get_col(col=None):
 @dataclass
 class DeckResult:
     deck_name: str
-    did: int
+    deck_id: int
     today_new_limit: int
     completion_day: int
     feasible: bool
@@ -72,7 +72,7 @@ def fsrs_disabled_result(deck_name: str, deck_id: int) -> DeckResult:
     """Placeholder result for a deck whose preset has no FSRS parameters."""
     return DeckResult(
         deck_name=deck_name,
-        did=deck_id,
+        deck_id=deck_id,
         today_new_limit=0,
         completion_day=-1,
         feasible=False,
@@ -89,7 +89,7 @@ def error_result(deck_name: str, deck_id: int, message: str) -> DeckResult:
     """Placeholder result for a deck whose planning raised an exception."""
     return DeckResult(
         deck_name=deck_name,
-        did=deck_id,
+        deck_id=deck_id,
         today_new_limit=0,
         completion_day=-1,
         feasible=False,
@@ -105,12 +105,13 @@ def error_result(deck_name: str, deck_id: int, message: str) -> DeckResult:
 # ---------------------------------------------------------------------------
 # Reading inputs from the collection
 # ---------------------------------------------------------------------------
-def subdeck_ids_csv(col, did: int) -> str:
+def subdeck_ids_csv(col, deck_id: int) -> str:
+    """Parenthesised CSV of the deck's id plus all child deck ids, for SQL IN."""
     from anki.utils import ids2str
-    return ids2str(col.decks.deck_and_child_ids(did))
+    return ids2str(col.decks.deck_and_child_ids(deck_id))
 
 
-def read_fsrs_params(col, did: int):
+def read_fsrs_params(col, deck_id: int):
     """Return (desired_retention, params_list_or_None) from the deck's preset.
 
     FSRS-6 requires exactly 21 parameters. We accept the value only when the
@@ -119,59 +120,63 @@ def read_fsrs_params(col, did: int):
     yet, we return the FSRS-6 defaults so planning still works.
     """
     from .scheduler import FSRS6_DEFAULT_PARAMS
-    conf = col.decks.config_dict_for_deck_id(did)
-    dr = conf.get("desiredRetention", 0.9)
+    preset = col.decks.config_dict_for_deck_id(deck_id)
+    desired_retention = preset.get("desiredRetention", 0.9)
 
     for key in ("fsrsParams6", "fsrsWeights"):
-        candidate = conf.get(key)
+        candidate = preset.get(key)
         if candidate and len(candidate) == 21:
-            return dr, list(candidate)
+            return desired_retention, list(candidate)
 
     # FSRS enabled globally but not yet optimised for this deck → use defaults
     if col.get_config("fsrs"):
-        return dr, list(FSRS6_DEFAULT_PARAMS)
+        return desired_retention, list(FSRS6_DEFAULT_PARAMS)
 
-    return dr, None  # SM-2 / FSRS disabled
+    return desired_retention, None  # SM-2 / FSRS disabled
 
 
-def is_fsrs_enabled(col, did: int) -> bool:
+def is_fsrs_enabled(col, deck_id: int) -> bool:
     """True if the deck's preset contains FSRS parameters."""
-    _, params = read_fsrs_params(col, did)
+    _, params = read_fsrs_params(col, deck_id)
     return params is not None
 
 
-def read_cost_model(col, did: int) -> CostModel:
+def read_cost_model(col, deck_id: int) -> CostModel:
     """Personalised study seconds derived from revlog medians.
 
     type: 0=learn 1=review 2=relearn 3=filtered; ease/rating: 1=Again..4=Easy.
     Medians are robust to the occasional 'walked-away-from-screen' card.
     """
-    dids = subdeck_ids_csv(col, did)
-    cid_filter = f"cid IN (SELECT id FROM cards WHERE did IN {dids})"
+    deck_ids = subdeck_ids_csv(col, deck_id)
+    card_filter = f"cid IN (SELECT id FROM cards WHERE did IN {deck_ids})"
 
-    def med(where: str, default: float) -> float:
+    def median_seconds(where: str, default: float) -> float:
         rows = col.db.list(
-            f"SELECT time/1000.0 FROM revlog WHERE {cid_filter} AND {where} "
+            f"SELECT time/1000.0 FROM revlog WHERE {card_filter} AND {where} "
             f"AND time > 0 AND time < 120000 ORDER BY time"
         )
         return float(statistics.median(rows)) if rows else default
 
-    sec_pass = med("type IN (1,2) AND ease >= 2", 7.0)
-    sec_lapse = med("type IN (1,2) AND ease = 1", 14.0)
+    sec_pass = median_seconds("type IN (1,2) AND ease >= 2", 7.0)
+    sec_lapse = median_seconds("type IN (1,2) AND ease = 1", 14.0)
     # new-card cost = median total learning time per newly-introduced card
-    per_card = col.db.list(
-        f"SELECT SUM(time)/1000.0 FROM revlog WHERE {cid_filter} AND type = 0 "
+    per_new_card_totals = col.db.list(
+        f"SELECT SUM(time)/1000.0 FROM revlog WHERE {card_filter} AND type = 0 "
         f"AND time > 0 AND time < 120000 GROUP BY cid"
     )
-    sec_new = float(statistics.median(per_card)) if per_card else 20.0
+    sec_new = (
+        float(statistics.median(per_new_card_totals))
+        if per_new_card_totals
+        else 20.0
+    )
     return CostModel(sec_new=sec_new, sec_pass=sec_pass, sec_lapse=sec_lapse)
 
 
-def read_existing_cards(col, did: int) -> list[Seed]:
+def read_existing_cards(col, deck_id: int) -> list[Seed]:
     """One Seed per non-new, non-suspended card. FSRS state from cards.data,
     due expressed as whole days from today (clamped to 0 for overdue/learning)."""
     today = col.sched.today
-    dids = subdeck_ids_csv(col, did)
+    deck_ids = subdeck_ids_csv(col, deck_id)
     rows = col.db.all(
         f"""
         SELECT
@@ -180,7 +185,7 @@ def read_existing_cards(col, did: int) -> list[Seed]:
             COALESCE(json_extract(data, '$.decay'), 0.1542),
             due, queue
         FROM cards
-        WHERE did IN {dids}
+        WHERE did IN {deck_ids}
           AND queue != -1
           AND type  != 0
           AND data  != ''
@@ -193,26 +198,26 @@ def read_existing_cards(col, did: int) -> list[Seed]:
             continue
         # queue 2 = review, queue 3 = day-learning — both use day-number `due`
         # all other queues (intraday learning) have epoch-second `due` → due now
-        due_off = max(0, int(due) - today) if queue in (2, 3) else 0
-        seeds.append(Seed(mass=1.0, s=float(s), d=float(d or 5.0), due=due_off))
+        due_offset = max(0, int(due) - today) if queue in (2, 3) else 0
+        seeds.append(Seed(mass=1.0, s=float(s), d=float(d or 5.0), due=due_offset))
     return seeds
 
 
-def count_new_cards(col, did: int) -> int:
-    dids = re.sub(r"[()]", "", subdeck_ids_csv(col, did))
-    return len(col.find_cards(f"is:new -is:suspended did:{dids}"))
+def count_new_cards(col, deck_id: int) -> int:
+    deck_ids = re.sub(r"[()]", "", subdeck_ids_csv(col, deck_id))
+    return len(col.find_cards(f"is:new -is:suspended did:{deck_ids}"))
 
 
 def studied_today_minutes(col, deck_id: int) -> float:
     """Minutes already spent on this deck's cards today (from revlog)."""
-    dids = subdeck_ids_csv(col, deck_id)
+    deck_ids = subdeck_ids_csv(col, deck_id)
     start_ms = (col.sched.day_cutoff - 86400) * 1000
-    ms = col.db.scalar(
+    milliseconds = col.db.scalar(
         f"SELECT COALESCE(SUM(time), 0) FROM revlog "
         f"WHERE id >= {start_ms} "
-        f"AND cid IN (SELECT id FROM cards WHERE did IN {dids})"
+        f"AND cid IN (SELECT id FROM cards WHERE did IN {deck_ids})"
     )
-    return (ms or 0) / 1000.0 / 60.0
+    return (milliseconds or 0) / 1000.0 / 60.0
 
 
 # ---------------------------------------------------------------------------
@@ -267,9 +272,9 @@ def read_deck_inputs(col, deck_id: int) -> DeckInputs:
 # ---------------------------------------------------------------------------
 # Writing the limit (same mechanism as Limit-New-by-Young)
 # ---------------------------------------------------------------------------
-def set_today_new_limit(col, did: int, limit: int) -> None:
+def set_today_new_limit(col, deck_id: int, limit: int) -> None:
     """Write a today-only new-card limit. Never touches the deck's preset."""
-    deck = col.decks.get(did)
+    deck = col.decks.get(deck_id)
     deck["newLimitToday"] = {"limit": int(max(0, limit)), "today": col.sched.today}
     col.decks.save(deck)
 
@@ -379,7 +384,7 @@ def compute_deck_plan(
 
     return DeckResult(
         deck_name=inputs.deck_name,
-        did=deck_id,
+        deck_id=deck_id,
         today_new_limit=today_limit,
         completion_day=full_plan.completion_day,
         feasible=full_plan.feasible,
@@ -394,7 +399,7 @@ def compute_deck_plan(
 
 
 def update_deck(
-    did: int,
+    deck_id: int,
     budget_minutes: float,
     horizon: int = 365,
     daily_new_cap: int = NO_DAILY_CAP,
@@ -411,9 +416,9 @@ def update_deck(
     col=None: falls back to aqt.mw.col (for use from hooks/menu actions).
     """
     col = _get_col(col)
-    inputs = read_deck_inputs(col, did)
+    inputs = read_deck_inputs(col, deck_id)
     if inputs.kernel is None:
-        return fsrs_disabled_result(inputs.deck_name, did)
+        return fsrs_disabled_result(inputs.deck_name, deck_id)
     if desired_retention_override is not None:
         inputs.kernel = FsrsKernel(
             params=inputs.params, desired_retention=desired_retention_override
@@ -421,7 +426,7 @@ def update_deck(
     inputs.studied_minutes = 0.0
     return compute_deck_plan(
         col,
-        did,
+        deck_id,
         budget_minutes=budget_minutes,
         daily_new_cap=daily_new_cap,
         horizon=horizon,

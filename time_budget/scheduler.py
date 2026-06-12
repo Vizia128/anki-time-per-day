@@ -18,6 +18,12 @@ Three pieces:
   2. Forecaster        - deterministic expectation simulation of future workload
   3. plan_schedule     - convolution-based controller that picks new cards/day
 
+Notation (mirrors py-fsrs / the FSRS literature)
+------------------------------------------------
+  s = stability (days), d = difficulty (1..10), r = retrievability (0..1),
+  w = the FSRS parameter vector. These short names are used only inside the
+  kernel/forecaster math; application code uses full words.
+
 Key modelling idea
 ------------------
 Cards are scheduled independently in FSRS, so *expected* daily review-seconds are
@@ -65,7 +71,7 @@ class FsrsKernel:
 
     def __init__(self, params=None, desired_retention: float = 0.9):
         self.w = list(params) if params is not None else list(FSRS6_DEFAULT_PARAMS)
-        self.dr = desired_retention
+        self.desired_retention = desired_retention
         self.decay = -self.w[20]                      # signed decay (negative)
         self.factor = 0.9 ** (1.0 / self.decay) - 1.0
 
@@ -75,8 +81,10 @@ class FsrsKernel:
 
     # interval that lands retrievability on the desired retention
     def next_interval(self, s: float) -> int:
-        ivl = (s / self.factor) * (self.dr ** (1.0 / self.decay) - 1.0)
-        return max(1, int(round(ivl)))
+        interval = (s / self.factor) * (
+            self.desired_retention ** (1.0 / self.decay) - 1.0
+        )
+        return max(1, int(round(interval)))
 
     def _clamp_d(self, d: float) -> float:
         return min(max(d, MIN_DIFFICULTY), MAX_DIFFICULTY)
@@ -169,8 +177,8 @@ class Forecaster:
     """
 
     def __init__(self, kernel: FsrsKernel, cost: CostModel):
-        self.k = kernel
-        self.c = cost
+        self.kernel = kernel
+        self.cost = cost
 
     @staticmethod
     def _key(s: float, d: float):
@@ -192,41 +200,46 @@ class Forecaster:
             b[1] += s * mass
             b[2] += d * mass
 
-        for z in seeds:
-            add(z.due, z.mass, z.s, z.d)
+        for seed in seeds:
+            add(seed.due, seed.mass, seed.s, seed.d)
 
-        dr = self.k.dr
-        c = self.c
-        per_review = dr * c.sec_pass + (1.0 - dr) * c.sec_lapse
-        sec = [0.0] * (horizon + 1)
-        revs = [0.0] * (horizon + 1)
+        retention = self.kernel.desired_retention
+        per_review = (
+            retention * self.cost.sec_pass
+            + (1.0 - retention) * self.cost.sec_lapse
+        )
+        seconds_per_day = [0.0] * (horizon + 1)
+        reviews_per_day = [0.0] * (horizon + 1)
 
         for day in range(0, horizon + 1):
             day_bucket = buckets.get(day)
             if not day_bucket:
                 continue
-            for (mass, sw, dw) in list(day_bucket.values()):
+            for (mass, s_weighted, d_weighted) in list(day_bucket.values()):
                 if mass <= 1e-12:
                     continue
-                s = sw / mass
-                d = dw / mass
-                r = dr  # on-time review
-                sec[day] += mass * per_review
-                revs[day] += mass
+                s = s_weighted / mass
+                d = d_weighted / mass
+                r = retention  # on-time review
+                seconds_per_day[day] += mass * per_review
+                reviews_per_day[day] += mass
 
                 # recall branch
-                mp = mass * dr
-                sp = self.k.stability_after_recall(d, s, r, GOOD)
-                dp = self.k.next_difficulty(d, GOOD)
-                add(day + self.k.next_interval(sp), mp, sp, dp)
+                recall_mass = mass * retention
+                recall_s = self.kernel.stability_after_recall(d, s, r, GOOD)
+                recall_d = self.kernel.next_difficulty(d, GOOD)
+                add(
+                    day + self.kernel.next_interval(recall_s),
+                    recall_mass, recall_s, recall_d,
+                )
 
                 # forget branch -> relearn, due next day
-                ml = mass * (1.0 - dr)
-                sl = self.k.stability_after_forget(d, s, r)
-                dl = self.k.next_difficulty(d, AGAIN)
-                add(day + 1, ml, sl, dl)
+                forget_mass = mass * (1.0 - retention)
+                forget_s = self.kernel.stability_after_forget(d, s, r)
+                forget_d = self.kernel.next_difficulty(d, AGAIN)
+                add(day + 1, forget_mass, forget_s, forget_d)
 
-        return sec, revs
+        return seconds_per_day, reviews_per_day
 
     def base_load(self, existing: list[Seed], horizon: int):
         """Predicted review seconds/day from cards already in the collection."""
@@ -235,11 +248,13 @@ class Forecaster:
     def new_card_tail(self, horizon: int, first_rating: int = GOOD):
         """Expected review seconds on each future day from ONE new card introduced
         today. tail[0] includes the learning-day cost; tail[k>0] is review load."""
-        s, d = self.k.graduated_state(first_rating)
-        first_ivl = self.k.next_interval(s)
-        sec, _ = self.simulate([Seed(mass=1.0, s=s, d=d, due=first_ivl)], horizon)
-        sec[0] += self.c.sec_new
-        return sec
+        s, d = self.kernel.graduated_state(first_rating)
+        first_interval = self.kernel.next_interval(s)
+        seconds, _ = self.simulate(
+            [Seed(mass=1.0, s=s, d=d, due=first_interval)], horizon
+        )
+        seconds[0] += self.cost.sec_new
+        return seconds
 
 
 # ---------------------------------------------------------------------------
@@ -280,37 +295,37 @@ def plan_schedule(
     Because tail is front-loaded and decaying, the binding constraint is either
     today or a near-future peak; we solve it in closed form per day.
     """
-    H = horizon
-    conv = [0.0] * (H + 1)          # load already committed by scheduled new cards
-    schedule = [0] * (H + 1)
+    committed = [0.0] * (horizon + 1)   # load from already-scheduled new cards
+    schedule = [0] * (horizon + 1)
     remaining = total_new_cards
-    tlen = len(tail)
+    tail_length = len(tail)
 
-    for d in range(H + 1):
+    for day in range(horizon + 1):
         if remaining <= 0:
             break
-        # largest n s.t. base[e] + conv[e] + n*tail[e-d] <= budget for all e>=d
-        n_max = float("inf")
-        upper = min(H, d + tlen - 1)
-        for e in range(d, upper + 1):
-            tk = tail[e - d]
-            if tk <= 0:
+        # Largest n such that, for every affected future day f:
+        #   base[f] + committed[f] + n * tail[f - day] <= budget
+        max_new = float("inf")
+        last_affected_day = min(horizon, day + tail_length - 1)
+        for future_day in range(day, last_affected_day + 1):
+            tail_load = tail[future_day - day]
+            if tail_load <= 0:
                 continue
-            headroom = budget_seconds - base[e] - conv[e]
-            n_max = min(n_max, headroom / tk)
-        if n_max == float("inf"):
-            n = 0
+            headroom = budget_seconds - base[future_day] - committed[future_day]
+            max_new = min(max_new, headroom / tail_load)
+        if max_new == float("inf"):
+            new_today = 0
         else:
-            n = int(math.floor(n_max + 1e-9))
-        n = max(0, min(n, remaining, daily_new_cap))
-        if n > 0:
-            schedule[d] = n
-            for k in range(tlen):
-                if d + k <= H:
-                    conv[d + k] += n * tail[k]
-            remaining -= n
+            new_today = int(math.floor(max_new + 1e-9))
+        new_today = max(0, min(new_today, remaining, daily_new_cap))
+        if new_today > 0:
+            schedule[day] = new_today
+            for offset in range(tail_length):
+                if day + offset <= horizon:
+                    committed[day + offset] += new_today * tail[offset]
+            remaining -= new_today
 
-    predicted = [base[i] + conv[i] for i in range(H + 1)]
+    predicted = [base[i] + committed[i] for i in range(horizon + 1)]
     completion = max((i for i, v in enumerate(schedule) if v > 0), default=-1)
     return Plan(
         schedule=schedule,
@@ -362,7 +377,8 @@ def adaptive_horizon(
     """
     if total_new_cards == 0:
         return 30
-    per_review = kernel.dr * cost.sec_pass + (1.0 - kernel.dr) * cost.sec_lapse
+    retention = kernel.desired_retention
+    per_review = retention * cost.sec_pass + (1.0 - retention) * cost.sec_lapse
     base_estimate = sum(seed.mass for seed in existing if seed.due == 0) * per_review
     available_seconds = max(1.0, budget_minutes * 60.0 - base_estimate)
     daily_new_cards = available_seconds / max(1.0, cost.sec_new)
