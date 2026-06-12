@@ -310,3 +310,28 @@ def test_compute_deck_plan_cap_conventions():
         assert uncapped.today_new_limit > capped.today_new_limit
     finally:
         col.close()
+
+
+# ---------------------------------------------------------------------------
+# 14. compute_deck_plan: desiredRetentionOverride changes the plan
+# ---------------------------------------------------------------------------
+def test_compute_deck_plan_retention_override():
+    col, did, path = build_fake_collection(n_review=0, n_new=300)
+    try:
+        low = A.compute_deck_plan(
+            col, did, budget_minutes=30.0, desired_retention_override=0.70
+        )
+        high = A.compute_deck_plan(
+            col, did, budget_minutes=30.0, desired_retention_override=0.97
+        )
+        assert low.error is None and high.error is None
+        # Lower retention -> longer intervals -> cheaper review tail -> the
+        # schedule must differ from the high-retention plan.
+        assert (
+            low.today_new_limit != high.today_new_limit
+            or low.completion_day != high.completion_day
+        )
+        # The preset itself must be untouched by planning with an override.
+        assert col.decks.config_dict_for_deck_id(did)["desiredRetention"] == 0.9
+    finally:
+        col.close()

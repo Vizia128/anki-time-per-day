@@ -46,10 +46,10 @@ from aqt.qt import (
 )
 from aqt.utils import tooltip
 
-from . import adapter
+from . import adapter, settings
 from .adapter import DeckResult
-from .constants import ADDON_PACKAGE, DEFAULT_BUDGET_MINUTES, DEFAULT_HORIZON_DAYS
-from .scheduler import NO_DAILY_CAP, find_budget_for_target
+from .constants import ADDON_PACKAGE
+from .scheduler import NO_DAILY_CAP, FsrsKernel, find_budget_for_target
 
 # Forecasts re-run this long after the last keystroke/spin.
 FORECAST_DEBOUNCE_MS = 400
@@ -81,9 +81,19 @@ class TimeBudgetDialog(QDialog):
         # Skips the dirty check when we initiate the close ourselves.
         self._force_close = False
         self._previous_deck_name = self._deck_names[0] if self._deck_names else ""
+        # The current deck's desiredRetentionOverride (config-only setting);
+        # carried through saves so hand-edited values are not lost.
+        self._retention_override: float | None = None
 
         self._build_ui()
         self._connect_signals()
+
+        invalid_patterns = settings.invalid_deck_patterns(self._config)
+        if invalid_patterns:
+            tooltip(
+                "Time Budget: ignoring invalid deck pattern(s) in config: "
+                + ", ".join(repr(p) for p in invalid_patterns)
+            )
 
         if self._deck_names:
             self._load_deck(self._deck_names[0])
@@ -310,9 +320,6 @@ class TimeBudgetDialog(QDialog):
     def _current_deck_name(self) -> str:
         return self.deck_selector.currentText()
 
-    def _current_deck_id(self) -> int | None:
-        return self._deck_ids.get(self._current_deck_name())
-
     def _today_day_cutoff(self) -> int:
         return aqt.mw.col.sched.day_cutoff
 
@@ -326,7 +333,8 @@ class TimeBudgetDialog(QDialog):
             "budgetMinutes": round(float(self.budget_spinbox.value()), 1),
             "horizonDays": int(self.finish_spinbox.value()),
             "dailyNewCap": int(cap_value) if cap_value > 0 else None,
-            "desiredRetentionOverride": None,
+            # Config-only setting (no widget); preserve a hand-edited value.
+            "desiredRetentionOverride": self._retention_override,
             "active": self.active_checkbox.isChecked(),
         }
 
@@ -355,19 +363,15 @@ class TimeBudgetDialog(QDialog):
                 "budgetMinutes": float(self.today_spinbox.value()),
                 "dayCutoff": self._today_day_cutoff(),
             }
+        settings.prune_stale_overrides(self._config, self._today_day_cutoff())
         aqt.mw.addonManager.writeConfig(ADDON_PACKAGE, self._config)
         self._dirty = False
 
-    def _load_today_override(self, deck_name: str) -> float | None:
-        """Stored today-budget if still valid for today, else None."""
-        entry = self._config.get("todayOverrides", {}).get(deck_name)
-        if entry and entry.get("dayCutoff") == self._today_day_cutoff():
-            return float(entry["budgetMinutes"])
-        return None
-
     def _load_deck(self, deck_name: str) -> None:
         """Populate widgets from saved config (no signals, resets dirty)."""
-        entry = adapter.match_deck_configs(self._config, deck_name) or {}
+        entry = settings.match_deck_entry(self._config, deck_name) or {}
+        parsed = settings.parse_deck_settings(entry)
+        self._retention_override = parsed.desired_retention_override
         widgets = (
             self.budget_spinbox,
             self.finish_spinbox,
@@ -377,21 +381,20 @@ class TimeBudgetDialog(QDialog):
             self.active_checkbox,
         )
         with self._signals_blocked(*widgets):
-            budget = float(entry.get("budgetMinutes", DEFAULT_BUDGET_MINUTES))
-            self.budget_spinbox.setValue(budget)
-            self.finish_spinbox.setValue(
-                int(entry.get("horizonDays", DEFAULT_HORIZON_DAYS))
+            self.budget_spinbox.setValue(parsed.budget_minutes)
+            self.finish_spinbox.setValue(parsed.horizon_days)
+            self.cap_spinbox.setValue(parsed.daily_new_cap)
+            self.active_checkbox.setChecked(parsed.active)
+            override = settings.today_override_minutes(
+                self._config, deck_name, self._today_day_cutoff()
             )
-            self.cap_spinbox.setValue(int(entry.get("dailyNewCap") or 0))
-            self.active_checkbox.setChecked(bool(entry.get("active", False)))
-            override = self._load_today_override(deck_name)
             if override is not None:
                 self.today_same_checkbox.setChecked(False)
                 self.today_spinbox.setValue(override)
                 self.today_spinbox.setEnabled(True)
             else:
                 self.today_same_checkbox.setChecked(True)
-                self.today_spinbox.setValue(budget)
+                self.today_spinbox.setValue(parsed.budget_minutes)
                 self.today_spinbox.setEnabled(False)
         self._dirty = False
 
@@ -459,7 +462,8 @@ class TimeBudgetDialog(QDialog):
     # ------------------------------------------------------------------
     def _run_forward_forecast(self) -> None:
         """Budget → forecast, and update 'Finish in' with the completion day."""
-        deck_id = self._current_deck_id()
+        deck_name = self._current_deck_name()
+        deck_id = self._deck_ids.get(deck_name)
         if deck_id is None:
             return
         self._forecast_generation += 1
@@ -473,15 +477,20 @@ class TimeBudgetDialog(QDialog):
             if self.today_same_checkbox.isChecked()
             else float(self.today_spinbox.value())
         )
+        retention_override = self._retention_override
 
         def compute(col) -> DeckResult:
-            return adapter.compute_deck_plan(
-                col,
-                deck_id,
-                budget_minutes=budget,
-                today_budget_minutes=today_budget,
-                daily_new_cap=daily_cap,
-            )
+            try:
+                return adapter.compute_deck_plan(
+                    col,
+                    deck_id,
+                    budget_minutes=budget,
+                    today_budget_minutes=today_budget,
+                    daily_new_cap=daily_cap,
+                    desired_retention_override=retention_override,
+                )
+            except Exception as exc:
+                return adapter.error_result(deck_name, deck_id, str(exc))
 
         def done(result: DeckResult) -> None:
             if self._forecast_generation != generation or not self.isVisible():
@@ -499,7 +508,8 @@ class TimeBudgetDialog(QDialog):
 
     def _run_reverse_forecast(self) -> None:
         """'Finish in' → binary-search the required budget, then forecast."""
-        deck_id = self._current_deck_id()
+        deck_name = self._current_deck_name()
+        deck_id = self._deck_ids.get(deck_name)
         if deck_id is None:
             return
         self._forecast_generation += 1
@@ -513,33 +523,49 @@ class TimeBudgetDialog(QDialog):
             if self.today_same_checkbox.isChecked()
             else float(self.today_spinbox.value())
         )
+        retention_override = self._retention_override
 
         def compute(col) -> tuple:
-            inputs = adapter.read_deck_inputs(col, deck_id)
-            if inputs.kernel is None:
-                return adapter.fsrs_disabled_result(inputs.deck_name, deck_id), 0.0
+            try:
+                inputs = adapter.read_deck_inputs(col, deck_id)
+                if inputs.kernel is None:
+                    return (
+                        adapter.fsrs_disabled_result(inputs.deck_name, deck_id),
+                        0.0,
+                    )
 
-            required_budget = find_budget_for_target(
-                inputs.existing,
-                inputs.total_new_cards,
-                target_days,
-                inputs.kernel,
-                inputs.cost,
-                daily_new_cap=daily_cap if daily_cap > 0 else NO_DAILY_CAP,
-            )
-            today_budget = (
-                today_override if today_override is not None else required_budget
-            )
-            result = adapter.compute_deck_plan(
-                col,
-                deck_id,
-                budget_minutes=required_budget,
-                today_budget_minutes=today_budget,
-                daily_new_cap=daily_cap,
-                horizon=target_days,
-                inputs=inputs,
-            )
-            return result, required_budget
+                kernel = inputs.kernel
+                if retention_override is not None:
+                    kernel = FsrsKernel(
+                        params=inputs.params,
+                        desired_retention=retention_override,
+                    )
+                required_budget = find_budget_for_target(
+                    inputs.existing,
+                    inputs.total_new_cards,
+                    target_days,
+                    kernel,
+                    inputs.cost,
+                    daily_new_cap=daily_cap if daily_cap > 0 else NO_DAILY_CAP,
+                )
+                today_budget = (
+                    today_override
+                    if today_override is not None
+                    else required_budget
+                )
+                result = adapter.compute_deck_plan(
+                    col,
+                    deck_id,
+                    budget_minutes=required_budget,
+                    today_budget_minutes=today_budget,
+                    daily_new_cap=daily_cap,
+                    horizon=target_days,
+                    desired_retention_override=retention_override,
+                    inputs=inputs,
+                )
+                return result, required_budget
+            except Exception as exc:
+                return adapter.error_result(deck_name, deck_id, str(exc)), 0.0
 
         def done(payload: tuple) -> None:
             if self._forecast_generation != generation or not self.isVisible():
@@ -659,16 +685,21 @@ class TimeBudgetDialog(QDialog):
             if self.today_same_checkbox.isChecked()
             else float(self.today_spinbox.value())
         )
+        retention_override = self._retention_override
 
         def compute(col) -> DeckResult:
-            return adapter.compute_deck_plan(
-                col,
-                deck_id,
-                budget_minutes=budget,
-                today_budget_minutes=today_budget,
-                daily_new_cap=daily_cap,
-                write_limit=True,
-            )
+            try:
+                return adapter.compute_deck_plan(
+                    col,
+                    deck_id,
+                    budget_minutes=budget,
+                    today_budget_minutes=today_budget,
+                    daily_new_cap=daily_cap,
+                    desired_retention_override=retention_override,
+                    write_limit=True,
+                )
+            except Exception as exc:
+                return adapter.error_result(deck_name, deck_id, str(exc))
 
         def done(result: DeckResult) -> None:
             if result.fsrs_disabled:

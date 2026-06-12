@@ -280,28 +280,6 @@ def set_today_new_limit(col, deck_id: int, limit: int) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Config matching
-# ---------------------------------------------------------------------------
-def match_deck_configs(config: dict, deck_name: str) -> dict | None:
-    """Return the first config entry whose deckNames matches deck_name, or None.
-
-    deckNames can be a regex string (fullmatch) or a list of exact names.
-    """
-    for entry in config.get("decks", []):
-        pattern = entry.get("deckNames", "")
-        if isinstance(pattern, str):
-            try:
-                if re.fullmatch(pattern, deck_name):
-                    return entry
-            except re.error:
-                pass
-        elif isinstance(pattern, list):
-            if deck_name in pattern:
-                return entry
-    return None
-
-
-# ---------------------------------------------------------------------------
 # Main entry points
 # ---------------------------------------------------------------------------
 def compute_deck_plan(
@@ -312,6 +290,7 @@ def compute_deck_plan(
     today_budget_minutes: float | None = None,
     daily_new_cap: int | None = None,
     horizon: int | None = None,
+    desired_retention_override: float | None = None,
     write_limit: bool = False,
     inputs: DeckInputs | None = None,
 ) -> DeckResult:
@@ -327,6 +306,8 @@ def compute_deck_plan(
         planning today's limit.
     daily_new_cap: hard ceiling on new cards/day (None or <= 0 = no cap).
     horizon: planning window in days (None = adaptive estimate).
+    desired_retention_override: plan with this retention instead of the
+        deck preset's value (None = use the preset's).
     inputs: pre-read collection data, to avoid a second read when the
         caller already has it.
     """
@@ -335,13 +316,19 @@ def compute_deck_plan(
     if inputs.kernel is None:
         return fsrs_disabled_result(inputs.deck_name, deck_id)
 
+    kernel = inputs.kernel
+    if desired_retention_override is not None:
+        kernel = FsrsKernel(
+            params=inputs.params, desired_retention=desired_retention_override
+        )
+
     cap = daily_new_cap if daily_new_cap and daily_new_cap > 0 else NO_DAILY_CAP
     if horizon is None:
         horizon = adaptive_horizon(
             inputs.existing,
             inputs.total_new_cards,
             budget_minutes,
-            inputs.kernel,
+            kernel,
             inputs.cost,
         )
     if today_budget_minutes is None:
@@ -351,7 +338,7 @@ def compute_deck_plan(
         existing=inputs.existing,
         total_new_cards=inputs.total_new_cards,
         budget_minutes=budget_minutes,
-        kernel=inputs.kernel,
+        kernel=kernel,
         cost=inputs.cost,
         horizon=horizon,
         daily_new_cap=cap,
@@ -369,7 +356,7 @@ def compute_deck_plan(
             existing=inputs.existing,
             total_new_cards=inputs.total_new_cards,
             budget_minutes=effective_today,
-            kernel=inputs.kernel,
+            kernel=kernel,
             cost=inputs.cost,
             horizon=horizon,
             daily_new_cap=cap,
@@ -419,10 +406,6 @@ def update_deck(
     inputs = read_deck_inputs(col, deck_id)
     if inputs.kernel is None:
         return fsrs_disabled_result(inputs.deck_name, deck_id)
-    if desired_retention_override is not None:
-        inputs.kernel = FsrsKernel(
-            params=inputs.params, desired_retention=desired_retention_override
-        )
     inputs.studied_minutes = 0.0
     return compute_deck_plan(
         col,
@@ -430,6 +413,7 @@ def update_deck(
         budget_minutes=budget_minutes,
         daily_new_cap=daily_new_cap,
         horizon=horizon,
+        desired_retention_override=desired_retention_override,
         write_limit=not dry_run,
         inputs=inputs,
     )

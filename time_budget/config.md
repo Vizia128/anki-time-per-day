@@ -33,7 +33,9 @@ avoiding extreme front-loading at the start of a deck. `null` means no cap.
 
 Override the desired retention used for planning. When `null` (default), the
 value from the deck's FSRS preset is used. Set to e.g. `0.85` to plan for a
-lower retention target without changing the preset.
+lower retention target without changing the preset. Values are clamped to
+the range 0.5–0.995. This setting has no widget in the dialog; saving from
+the dialog preserves a hand-edited value.
 
 ### `active` *(boolean, default false)*
 
