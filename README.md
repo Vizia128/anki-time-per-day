@@ -4,11 +4,9 @@ An Anki add-on that replaces the fixed "new cards per day" setting with a **dail
 
 ## Why
 
-People plan their lives in time, not in cards: "I can study 30 minutes a day" is a real commitment; "20 new cards a day" is not, because the time it costs changes constantly. A fixed new-card rate also compounds — it costs almost nothing in week one, then reviews accumulate until your daily load has doubled or tripled and you either burn out or slam the new-card limit to zero.
+A fixed new-card count doesn't correspond to a fixed amount of time. Reviews accumulate, so 20 new cards a day might cost 10 minutes in the first week and 45 minutes a few months later. Most people budget their day in time, not in cards — "30 minutes a day" is a commitment you can actually keep. This add-on holds your study time constant instead: it introduces new cards quickly while the deck is light and slows down as the review load grows, and it won't introduce a card today if doing so would push a *future* day over your budget.
 
-This add-on turns the dial around: you fix the time, and the new-card count adapts. It introduces cards as fast as your budget allows while guaranteeing that no current *or future* day is predicted to exceed it, so the pace is sustainable from day one.
-
-The add-on is deliberately conservative about what it touches: it only writes the deck's **today-only new-card limit** (the same field as "New cards today" in deck options). It never reschedules reviews, never edits cards, and never changes your deck presets.
+It only writes the deck's today-only new-card limit (the same field as "New cards today" in deck options). It doesn't reschedule reviews, modify cards, or change your presets.
 
 ## How it works
 
